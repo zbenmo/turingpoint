@@ -1,4 +1,4 @@
-from typing import Protocol, Generator, Any
+from typing import Protocol, Generator, Optional
 from abc import ABC
 
 
@@ -12,24 +12,30 @@ class Action(Protocol):
 
 class Agent(ABC):
   """
-  An abstract agent. You need to impelement the 'being' generator.
+  An abstract agent. You need to impelement the '_being' generator.
   In the implementation of '_being' make sure to have the first line "obs = yield None".
   Having the first line in '_being' read "obs = yield None" is needed make sure the first thing that happens is that the agent receives
    an observation.
-  The "environment" shall use the agent's 'react' function rather than directly calling '_being'.  
+  The "environment" should use the agent's 'react' function rather than directly calling '_being'.  
   """
   def __init__(self):
-    self.agent = self._being()
-    next(self.agent)
+    self.reset()
 
-  def react(self, observation: Observation) -> Action:
+  def react(self, observation: Observation) -> Optional[Action]:
+    """
+    Call this function from your main loop / environment. The return value is None when the agent is not any more active.
+    """
     try:
-      return self.agent.send(observation)
+      return self._mind.send(observation)
     except StopIteration:
       return None
 
   def _being(self) -> Generator[Action, Observation, None]:
     ...
+
+  def reset(self):
+    self._mind = self._being()
+    next(self._mind)
 
 
 class MyAgent(Agent):
@@ -82,6 +88,25 @@ def two_agents_example():
       break
 
 
+def two_episodes_example():
+  agent = MyAgent()
+  for episode in range(2):
+    print(f'{episode=}')
+    print("--")
+    position = 5
+    while True:
+      print(f'{position=}')
+      action = agent.react(position)
+      print(f'{action=}')
+      if action == 'go_left':
+        position = position - 1
+      if position < 1:
+        agent.react('RIP')
+        break
+    print()
+    agent.reset()
+
+
 def main():
   print("one_agent_example")
   print("-----------------")
@@ -90,6 +115,10 @@ def main():
   print("two_agents_example")
   print("-----------------")
   two_agents_example()
+  print()
+  print("two_episodes_example")
+  print("--------------------")
+  two_episodes_example()
   print()
 
 
