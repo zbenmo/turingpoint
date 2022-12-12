@@ -51,6 +51,11 @@ class MyAgent(Agent):
       obs = yield self.default_action
     self.final_wish = "Hope I'll get to heaven."
 
+  def reset(self):
+    super().reset()
+    if hasattr(self, 'final_wish'):
+      del self.final_wish
+
 
 def one_agent_example():
   agent = MyAgent()
@@ -107,6 +112,50 @@ def two_episodes_example():
     agent.reset()
 
 
+class MyRLAgent(Agent):
+  def __init__(self, default_action: str = "go_left"):
+    super().__init__()
+    self.default_action = default_action
+    self.total_reward = 0
+
+  def _being(self) -> Generator[Action, Observation, None]:
+    obs = yield None
+    while True:
+      if obs == 'done':
+        break
+      if isinstance(obs, dict):
+        self.total_reward += obs['reward']
+      obs = yield self.default_action
+    self.final_wish = "To be recognized for the total reward that I've collected."
+
+  def reset(self):
+    super().reset()
+    self.total_reward = 0
+    if hasattr(self, 'final_wish'):
+      del self.final_wish
+
+
+def reward_done_example():
+  agent = MyRLAgent()
+  position = 5
+  print(f'{position=}')
+  action = agent.react(position)
+  while True:
+    print(f'{action=}')
+    if action == 'go_left':
+      position = position - 1
+      print(f'{position=}')
+    if position < 1:
+      agent.react('done')
+      break
+    else:
+      action = agent.react({
+        'reward': +1,
+        'position': position
+      })
+  print(f'The agent collected {agent.total_reward} total reward.')
+
+
 def main():
   print("one_agent_example")
   print("-----------------")
@@ -119,6 +168,10 @@ def main():
   print("two_episodes_example")
   print("--------------------")
   two_episodes_example()
+  print()
+  print("reward_done_example")
+  print("--------------------")
+  reward_done_example()
   print()
 
 
