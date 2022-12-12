@@ -35,7 +35,7 @@ class Agent(ABC):
 
   def reset(self):
     self._mind = self._being()
-    next(self._mind)
+    next(self._mind) # needed to kick-off the generator
 
 
 class MyAgent(Agent):
@@ -121,10 +121,9 @@ class MyRLAgent(Agent):
   def _being(self) -> Generator[Action, Observation, None]:
     obs = yield None
     while True:
-      if obs == 'done':
+      self.total_reward += obs.get('reward', 0)
+      if obs.get('done', False):
         break
-      if isinstance(obs, dict):
-        self.total_reward += obs['reward']
       obs = yield self.default_action
     self.final_wish = "To be recognized for the total reward that I've collected."
 
@@ -139,14 +138,18 @@ def reward_done_example():
   agent = MyRLAgent()
   position = 5
   print(f'{position=}')
-  action = agent.react(position)
+  action = agent.react({
+    'position': position
+  })
   while True:
     print(f'{action=}')
     if action == 'go_left':
       position = position - 1
       print(f'{position=}')
     if position < 1:
-      agent.react('done')
+      agent.react({
+        'done': True
+      })
       break
     else:
       action = agent.react({
