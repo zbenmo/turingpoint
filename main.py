@@ -1,49 +1,14 @@
-from typing import Protocol, Generator, Optional
-from abc import ABC
+from typing import Generator, Any, Dict
+
+import turingpoint as tp
 
 
-class Observation(Protocol):
-  ...
-
-
-class Action(Protocol):
-  ...
-
-
-class Agent(ABC):
-  """
-  An abstract agent. You need to impelement the '_being' generator.
-  In the implementation of '_being' make sure to have the first line "obs = yield None".
-  Having the first line in '_being' read "obs = yield None" is needed make sure the first thing that happens is that the agent receives
-   an observation.
-  The "environment" should use the agent's 'react' function rather than directly calling '_being'.  
-  """
-  def __init__(self):
-    self.reset()
-
-  def react(self, observation: Observation) -> Optional[Action]:
-    """
-    Call this function from your main loop / environment. The return value is None when the agent is not any more active.
-    """
-    try:
-      return self._mind.send(observation)
-    except StopIteration:
-      return None
-
-  def _being(self) -> Generator[Action, Observation, None]:
-    ...
-
-  def reset(self):
-    self._mind = self._being()
-    next(self._mind) # needed to kick-off the generator
-
-
-class MyAgent(Agent):
+class MyAgent(tp.Agent):
   def __init__(self, default_action: str = "go_left"):
     super().__init__()
     self.default_action = default_action
 
-  def _being(self) -> Generator[Action, Observation, None]:
+  def _being(self) -> Generator[str, Any, None]:
     obs = yield None
     while True:
       if obs == 'RIP':
@@ -61,7 +26,7 @@ class PreditorAgent(MyAgent):
   def __init__(self, default_action: str = "go_left"):
     super().__init__(default_action)
 
-  def _being(self) -> Generator[Action, Observation, None]:
+  def _being(self) -> Generator[str, Any, None]:
     obs = yield None
     while True:
       if obs == 'RIP':
@@ -140,14 +105,14 @@ def two_episodes_example():
     agent.reset()
 
 
-class MyRLAgent(Agent):
+class MyRLAgent(tp.Agent):
   def __init__(self, default_action: str = "go_left"):
     super().__init__()
     self.default_action = default_action
     self.total_reward = 0
     self.episode = []
 
-  def _being(self) -> Generator[Action, Observation, None]:
+  def _being(self) -> Generator[str, Dict, None]:
     obs = yield None
     while True:
       self.episode.append(obs)
