@@ -117,19 +117,24 @@ class MyRLAgent(Agent):
     super().__init__()
     self.default_action = default_action
     self.total_reward = 0
+    self.episode = []
 
   def _being(self) -> Generator[Action, Observation, None]:
     obs = yield None
     while True:
+      self.episode.append(obs)
       self.total_reward += obs.get('reward', 0)
       if obs.get('done', False):
         break
-      obs = yield self.default_action
+      action = self.default_action
+      self.episode.append(action)
+      obs = yield action
     self.final_wish = "To be recognized for the total reward that I've collected."
 
   def reset(self):
     super().reset()
     self.total_reward = 0
+    self.episode = []
     if hasattr(self, 'final_wish'):
       del self.final_wish
 
@@ -148,7 +153,8 @@ def reward_done_example():
       print(f'{position=}')
     if position < 1:
       agent.react({
-        'done': True
+        'done': True,
+        'reward': -10
       })
       break
     else:
@@ -157,6 +163,7 @@ def reward_done_example():
         'position': position
       })
   print(f'The agent collected {agent.total_reward} total reward.')
+  print(f"Judging from the agent's recollection, the episode is {agent.episode}")
 
 
 def main():
