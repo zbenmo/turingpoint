@@ -57,6 +57,20 @@ class MyAgent(Agent):
       del self.final_wish
 
 
+class PreditorAgent(MyAgent):
+  def __init__(self, default_action: str = "go_left"):
+    super().__init__(default_action)
+
+  def _being(self) -> Generator[Action, Observation, None]:
+    obs = yield None
+    while True:
+      if obs == 'RIP':
+        break
+      action = "go_right" if obs.get('pray', None) is not None else self.default_action 
+      obs = yield action
+    self.final_wish = "Hope I'll get to heaven."
+
+
 def one_agent_example():
   agent = MyAgent()
   position = 5
@@ -72,23 +86,37 @@ def one_agent_example():
 
 
 def two_agents_example():
-  agent1 = MyAgent("go_left")
-  agent2 = MyAgent("go_right")
+  agent1 = MyAgent()
+  agent2 = PreditorAgent()
   position1 = 5
   position2 = 1
   while True:
-    print(f'{position1=}')
+    if agent1:
+      print(f'{position1=}')
     print(f'{position2=}')
-    action1 = agent1.react(position1)
-    print(f'{action1=}')
-    action2 = agent2.react(position2)
+    if agent1:
+      action1 = agent1.react(position1)
+      print(f'{action1=}')
+    obs_agent2 = {
+      'you': position2
+    }
+    if agent1 is not None:
+      obs_agent2.update({
+        'pray': position1
+      })
+    action2 = agent2.react(obs_agent2)
     print(f'{action2=}')
     if action1 == 'go_left':
-      position1 = position1 - 1
+      position1 += -1
     if action2 == 'go_right':
-      position2 = position2 + 1
-    if position1 <= position2:
-      agent1.react('RIP')
+      position2 += +1
+    elif action2 == 'go_left':
+      position2 += -1
+    if agent1:
+      if position1 <= position2:
+        agent1.react('RIP')
+        agent1 = None
+    if position2 < 0:
       agent2.react('RIP')
       break
 
