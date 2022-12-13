@@ -14,7 +14,7 @@ class MyAgent(tp.Agent):
       if obs == 'RIP':
         break
       obs = yield self.default_action
-    self.final_wish = "Hope I'll get to heaven."
+    self.final_wish = "Hope I get to heaven."
 
   def reset(self):
     super().reset()
@@ -33,7 +33,7 @@ class PreditorAgent(MyAgent):
         break
       action = "go_right" if obs.get('pray', None) is not None else self.default_action 
       obs = yield action
-    self.final_wish = "Hope I'll get to heaven."
+    self.final_wish = "Hope I get to heaven."
 
 
 def one_agent_example():
@@ -41,12 +41,12 @@ def one_agent_example():
   position = 5
   while True:
     print(f'{position=}')
-    action = agent.react(position)
+    action = agent.observe(position)
     print(f'{action=}')
     if action == 'go_left':
       position = position - 1
     if position < 1:
-      agent.react('RIP')
+      agent.observe('RIP')
       break
 
 
@@ -60,7 +60,7 @@ def two_agents_example():
       print(f'{position1=}')
     print(f'{position2=}')
     if agent1:
-      action1 = agent1.react(position1)
+      action1 = agent1.observe(position1)
       print(f'{action1=}')
     obs_agent2 = {
       'you': position2
@@ -69,7 +69,7 @@ def two_agents_example():
       obs_agent2.update({
         'pray': position1
       })
-    action2 = agent2.react(obs_agent2)
+    action2 = agent2.observe(obs_agent2)
     print(f'{action2=}')
     if action1 == 'go_left':
       position1 += -1
@@ -79,10 +79,10 @@ def two_agents_example():
       position2 += -1
     if agent1:
       if position1 <= position2:
-        agent1.react('RIP')
+        agent1.observe('RIP')
         agent1 = None
     if position2 < 0:
-      agent2.react('RIP')
+      agent2.observe('RIP')
       break
 
 
@@ -94,12 +94,12 @@ def two_episodes_example():
     position = 5
     while True:
       print(f'{position=}')
-      action = agent.react(position)
+      action = agent.observe(position)
       print(f'{action=}')
       if action == 'go_left':
         position = position - 1
       if position < 1:
-        agent.react('RIP')
+        agent.observe('RIP')
         break
     print()
     agent.reset()
@@ -136,7 +136,7 @@ def reward_done_example():
   agent = MyRLAgent()
   position = 5
   print(f'{position=}')
-  action = agent.react({
+  action = agent.observe({
     'position': position
   })
   while True:
@@ -145,13 +145,13 @@ def reward_done_example():
       position = position - 1
       print(f'{position=}')
     if position < 1:
-      agent.react({
+      agent.observe({
         'done': True,
         'reward': -10
       })
       break
     else:
-      action = agent.react({
+      action = agent.observe({
         'reward': +1,
         'position': position
       })

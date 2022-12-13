@@ -10,12 +10,12 @@ class Agent(ABC):
   In the implementation of '_being' make sure to have the first line "obs = yield None".
   Having the first line in '_being' read "obs = yield None" is needed make sure the first thing that happens is that the agent receives
    an observation.
-  The "environment" should use the agent's 'react' function rather than directly calling '_being'.  
+  The "environment" should use the agent's 'observe' function rather than directly calling '_being'.  
   """
   def __init__(self):
     self.reset()
 
-  def react(self, observation: Observation) -> Optional[Action]:
+  def observe(self, observation: Observation) -> Optional[Action]:
     """
     Call this function from your main loop / environment. The return value is None when the agent is not any more active.
     """
