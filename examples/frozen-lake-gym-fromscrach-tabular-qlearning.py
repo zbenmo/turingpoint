@@ -1,4 +1,5 @@
-from typing import Generator, Dict, Protocol
+# based on HuggingFace RL course (unit 2)
+
 import gym
 import numpy as np
 from tqdm import tqdm
@@ -100,7 +101,6 @@ def main():
 
   def train(num_episodes: n_training_episodes, min_epsilon, max_epsilon, decay_rate, max_steps):
     state = None
-    last_action = None
 
     epsilon = None
     steps = None
@@ -109,28 +109,23 @@ def main():
       return state
 
     def scatter_observations(state):
-      nonlocal epsilon
-
       action = epsilon_greedy_policy(Qtable_frozenlake, state, epsilon)
       return action
 
     def apply_actions(action):
-      nonlocal last_action
-
-      last_action = action
-      return env.step(action)
+      return action, env.step(action) # we want to include here also the 'action' as it will be needed below.
 
     def observe_results(results) -> bool:
       nonlocal state
       nonlocal steps
 
-      new_state, reward, done, info = results
+      action, (new_state, reward, done, info) = results
       target_value = (
         reward + gamma * np.max(Qtable_frozenlake[new_state, :])
       )
-      Qtable_frozenlake[state][last_action] = (
-        Qtable_frozenlake[state][last_action]
-        + learning_rate * (target_value - Qtable_frozenlake[state][last_action])
+      Qtable_frozenlake[state][action] = (
+        Qtable_frozenlake[state][action]
+        + learning_rate * (target_value - Qtable_frozenlake[state][action])
       )
       state = new_state
       steps += 1
@@ -140,7 +135,7 @@ def main():
       get_state,
       scatter_observations,
       apply_actions,
-      observe_results
+      observe_results # learning happens here
     )
 
     for episode in tqdm(range(num_episodes), desc="train"):
