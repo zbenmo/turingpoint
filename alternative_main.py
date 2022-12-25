@@ -1,6 +1,6 @@
 from typing import Tuple, Optional
 from dataclasses import dataclass
-from turingpoint.environment import Environment
+from turingpoint.environment import Assemble
 
 
 def one_agent_example():
@@ -27,7 +27,7 @@ def one_agent_example():
   def observe_results(results: bool) -> bool:
     return results
 
-  environment = Environment(
+  environment = Assemble(
     get_state=get_state,
     scatter_observations=scatter_observations,
     apply_actions=apply_actions,
@@ -92,7 +92,7 @@ def two_agents_example():
   def observe_results(results: bool) -> bool:
     return results
 
-  environment = Environment(
+  environment = Assemble(
     get_state=get_state,
     scatter_observations=scatter_observations,
     apply_actions=apply_actions,
@@ -126,7 +126,7 @@ def two_episodes_example():
   def observe_results(results: bool) -> bool:
     return results
 
-  environment = Environment(
+  environment = Assemble(
     get_state=get_state,
     scatter_observations=scatter_observations,
     apply_actions=apply_actions,
@@ -186,7 +186,7 @@ def reward_done_example():
     total_reward += reward
     return done
 
-  environment = Environment(
+  environment = Assemble(
     get_state=get_state,
     scatter_observations=scatter_observations,
     apply_actions=apply_actions,

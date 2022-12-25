@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 
 # import turingpoint as tp
-from turingpoint.environment import Environment
+from turingpoint.assembly import Assembly
 
 
 # Training parameters
@@ -86,7 +86,7 @@ def main():
       total_reward += reward
       return done      
 
-    eval_environment = Environment(
+    eval_assembly = Assembly(
       get_state,
       scatter_observations,
       apply_actions,
@@ -95,7 +95,7 @@ def main():
 
     for _ in range(num_episodes):
       state = env.reset()
-      eval_environment.launch()
+      eval_assembly.launch()
 
     return total_reward / num_episodes
 
@@ -113,7 +113,7 @@ def main():
       return action
 
     def apply_actions(action):
-      return action, env.step(action) # we want to include here also the 'action' as it will be needed below.
+      return action, env.step(action) # we want to include here also the 'action' as it is needed below.
 
     def observe_results(results) -> bool:
       nonlocal state
@@ -131,7 +131,7 @@ def main():
       steps += 1
       return done or (steps == max_steps)
 
-    train_environment = Environment(
+    train_assembly = Assembly(
       get_state,
       scatter_observations,
       apply_actions,
@@ -143,7 +143,7 @@ def main():
             np.exp(-decay_rate * episode)
       state = env.reset()
       steps = 0
-      train_environment.launch()
+      train_assembly.launch()
 
   train(n_training_episodes, min_epsilon, max_epsilon, decay_rate, max_steps)
 

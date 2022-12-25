@@ -3,7 +3,7 @@ from stable_baselines3.ppo.policies import MlpPolicy
 import gym
 
 # import turingpoint as tp
-from turingpoint.environment import Environment
+from turingpoint.assembly import Assembly
 
 
 def main():
@@ -34,7 +34,7 @@ def main():
       total_reward += reward
       return done
 
-    eval_environment = Environment(
+    eval_assembly = Assembly(
       get_state,
       scatter_observations,
       apply_actions,
@@ -43,7 +43,7 @@ def main():
 
     for _ in range(num_episodes):
       state = env.reset()
-      eval_environment.launch()
+      eval_assembly.launch()
 
     return total_reward / num_episodes
 

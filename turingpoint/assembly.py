@@ -26,7 +26,7 @@ class ObserveResults(Protocol):
     ...
 
 
-class Environment:
+class Assembly:
   def __init__(
     self,
     get_state: GetState,
