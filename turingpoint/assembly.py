@@ -1,48 +1,39 @@
-from typing import Protocol
+from abc import ABC, abstractmethod
+from typing import Generator
 from .definitions import *
 
 
-class GetState(Protocol):
-  def __call__() -> State:
-    ...
+class Assembly(ABC):
 
+  @abstractmethod
+  def create_initial_parcel(self) -> dict:
+    pass
 
-class ScatterObservations(Protocol):
-  def __call__(state: State) -> Action:
-    ...
+  @abstractmethod
+  def participants(self) -> Generator[Participant, None, None]:
+    pass
 
+  def launch(self) -> dict:
+    """
+    The 'launch' function is an episode (or main) loop of the evaluation / training / playing / deploying realm.
+    For example if you are running multiple episodes you'll probably be calling this function multiple times as needed.
+    
+    The initial parcel is created with a call to 'self.create_inital_parcel()',
+    for example setting the initial observations, and then this function (launch) calls the parcipitants
+    each at its turn.
 
-class Result(Protocol):
-  ...
+    The 'self.parcipitants' generator can be based for example on a list,
+    where once the end of the list is reached,
+    the generator goes back to the start of the list.
+    
+    Given that the 'participants' generator is potentially infinite,
+    it is the responsibility of (one or more) of the participants to close the generator.
+    Closing the generator from a participant can be achieved by raising a flag or by raising an event. See examples.
 
-
-class ApplyActions(Protocol):
-  def __call__(actions: Action) -> Result:
-    ...
-
-
-class ObserveResults(Protocol):
-  def __call__(results: Result) -> bool:
-    ...
-
-
-class Assembly:
-  def __init__(
-    self,
-    get_state: GetState,
-    scatter_observations: ScatterObservations,
-    apply_actions: ApplyActions,
-    observe_results: ObserveResults):
-
-    self.get_state = get_state
-    self.scatter_observations = scatter_observations
-    self.apply_actions = apply_actions
-    self.observe_results = observe_results
-
-  def launch(self):
-    done = False
-    while not done:
-      state = self.get_state()
-      actions = self.scatter_observations(state)
-      results = self.apply_actions(actions)
-      done = self.observe_results(results)
+    The return value is the parcel as is at the end of the loop's execution.
+    """
+    
+    parcel = self.create_initial_parcel()
+    for participant in self.participants():
+      participant(parcel)
+    return parcel
