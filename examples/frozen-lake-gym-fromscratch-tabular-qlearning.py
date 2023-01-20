@@ -94,14 +94,6 @@ def main():
       action = epsilon_greedy_policy(Qtable_frozenlake, obs, epsilon)
       parcel['action'] = action
 
-    def environment(parcel: dict) -> None:
-      action = parcel['action']
-      new_obs, reward, done, info = env.step(action)
-      parcel['new_obs'] = new_obs
-      parcel['reward'] = reward
-      parcel['done'] = done
-      parcel['info'] = info
-
     def learning(parcel: dict) -> None:
       obs = parcel['obs']
       action = parcel['action']
@@ -125,7 +117,12 @@ def main():
       steps += 1
       parcel['done'] = parcel.get('done', False) or (steps == max_steps)
 
-    assembly = GymAssembly(env, [agent, environment, learning, end_iteraction])
+    assembly = GymAssembly(env, [
+      agent,
+      EnvironmentParticipant(env, save_obs_as="new_obs"),
+      learning,
+      end_iteraction
+    ])
 
     for episode in tqdm(range(num_episodes), desc="train"):
       epsilon = min_epsilon + (max_epsilon - min_epsilon) * \

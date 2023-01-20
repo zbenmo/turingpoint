@@ -22,7 +22,11 @@ def main():
       reward = parcel['reward']
       total_reward += reward
 
-    assembly = GymAssembly(env, [AgentParticipant(agent), EnvironmentParticipant(env), bookkeeping])
+    assembly = GymAssembly(env, [
+      AgentParticipant(agent, deterministic=True),
+      EnvironmentParticipant(env),
+      bookkeeping
+    ])
 
     for _ in range(num_episodes):
       _ = assembly.launch()

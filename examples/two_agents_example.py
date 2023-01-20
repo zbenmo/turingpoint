@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from turingpoint.assembly import Assembly
 from turingpoint.definitions import Participant
 from turingpoint.utils import print_parcel
-from typing import List, Generator, Optional
+from typing import Generator, Optional
 
 
 @dataclass
@@ -23,8 +23,8 @@ def two_agents_example():
     parcel['obs'] = state # potentially use dataclasses.replace(state) to create a copy
 
   class MyAssembly(Assembly):
-    def __init__(self, participants_list: List[Participant]):
-      self.participants_list = participants_list
+    def __init__(self):
+      self.participants_list = [print_parcel, self.agent1, self.agent2, self.environment, print_parcel]
 
     def create_initial_parcel(self) -> dict:
       """
@@ -50,41 +50,40 @@ def two_agents_example():
         yield from self.participants_list
         yield check_done
 
-  def agent1(parcel: dict) -> None:
-    """
-    participant "prey"
-    """
-    if not parcel['obs'].agent1:
-      return # a better implementation would have removed agent1 from the next generator's yields
-    parcel['action_agent1'] = "go_left"
+    def agent1(self, parcel: dict) -> None:
+      """
+      participant "prey"
+      """
+      parcel['action_agent1'] = "go_left"
 
-  def agent2(parcel: dict) -> None:
-    """
-    participant "hunter"
-    """
-    action = "go_right" if parcel['obs'].agent1 else "go_left"
-    parcel['action_agent2'] = action 
+    def agent2(self, parcel: dict) -> None:
+      """
+      participant "hunter"
+      """
+      action = "go_right" if parcel['obs'].agent1 else "go_left"
+      parcel['action_agent2'] = action 
 
-  def environment(parcel: dict) -> None:
-    nonlocal state
-    
-    if state.agent1:
-      if parcel['action_agent1'] == 'go_left':
-        state.position_agent1 += -1
-    if parcel['action_agent2'] == 'go_right':
-      state.position_agent2 += +1
-    elif parcel['action_agent2'] == 'go_left':
-      state.position_agent2 += -1
-    if state.agent1:
-      if state.position_agent1 <= state.position_agent2:
-        state.agent1 = False
-        state.position_agent1 = None
-    if state.position_agent2 < 0:
-      parcel['done'] = True
-      # Here we'll only report on the end of the whole episode for agent2, but we could've report about agent1 also and more.
-    set_observation(parcel)
+    def environment(self, parcel: dict) -> None:
+      nonlocal state
+      
+      if state.agent1:
+        if parcel['action_agent1'] == 'go_left':
+          state.position_agent1 += -1
+      if parcel['action_agent2'] == 'go_right':
+        state.position_agent2 += +1
+      elif parcel['action_agent2'] == 'go_left':
+        state.position_agent2 += -1
+      if state.agent1:
+        if state.position_agent1 <= state.position_agent2:
+          state.agent1 = False
+          state.position_agent1 = None
+          self.participants_list.remove(self.agent1)
+      if state.position_agent2 < 0:
+        parcel['done'] = True
+        # Here we'll only report on the end of the whole episode for agent2, but we could've report about agent1 also and more.
+      set_observation(parcel)
 
-  assembly = MyAssembly([print_parcel, agent1, agent2, environment, print_parcel])
+  assembly = MyAssembly()
 
   assembly.launch()
 

@@ -19,12 +19,11 @@ class Assembly(ABC):
     For example if you are running multiple episodes you'll probably be calling this function multiple times as needed.
     
     The initial parcel is created with a call to 'self.create_inital_parcel()',
-    for example setting the initial observations, and then this function (launch) calls the parcipitants
-    each at its turn.
+    which in turn will, for example, set the initial observations.
+    Next this function (launch) calls the parcipitants each at its turn.
 
     The 'self.parcipitants' generator can be based for example on a list,
-    where once the end of the list is reached,
-    the generator goes back to the start of the list.
+    where once the end of the list is reached, the generator goes back to the start of the list.
     
     Given that the 'participants' generator is potentially infinite,
     it is the responsibility of (one or more) of the participants to close the generator.

@@ -1,32 +1,44 @@
 from typing import Generator, List
-from turingpoint.assembly import Assembly
+from turingpoint import Assembly
 from turingpoint.definitions import Participant
 import stable_baselines3.common
 import gym
 
 
 class AgentParticipant(Participant):
-  def __init__(self, agent: stable_baselines3.common.base_class.BaseAlgorithm):
+  def __init__(self,
+               agent: stable_baselines3.common.base_class.BaseAlgorithm,
+               **kwargs):
     self.agent = agent
+    self.kwargs = kwargs
 
   def __call__(self, parcel: dict) -> None:
     obs = parcel['obs']
-    action, _state = self.agent.predict(obs, deterministic=True)
+    action, _state = self.agent.predict(obs, **self.kwargs)
     parcel['action'] = action
 
 
 class EnvironmentParticipant(Participant):
-  def __init__(self, env: gym.Env):
+  def __init__(self, env: gym.Env, save_obs_as="obs"):
     self.env = env
+    self.save_obs_as = save_obs_as
 
   def __call__(self, parcel: dict) -> None:
     action = parcel['action']
     obs, reward, done, info = self.env.step(action)
     # this version of gym is still with done (if you have terminate + truncated) modify it accordingly
-    parcel['obs'] = obs
+    parcel[self.save_obs_as] = obs
     parcel['reward'] = reward
     parcel['done'] = done
     parcel['info'] = info
+
+
+class RenderParticipant(Participant):
+  def __init__(self, env: gym.Env):
+    self.env = env
+
+  def __call__(self, _: dict):
+    self.env.render()
 
 
 class GymAssembly(Assembly):

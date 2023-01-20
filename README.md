@@ -7,7 +7,7 @@ You may opt to continue using also the libraries that you're currently using, su
 Turing point integrates easily with existing RL libraries and your own custom code.
 Integration of RL agents in the target applications should be significantly easier with Turing point.
 
-Consider a Gym/SB3 training setting:
+Consider a Gym/SB3 training realm:
 
 ```python
 import gym
@@ -52,7 +52,7 @@ for i in range(1000):
 ```
 
 In the comments above, we've tried to give the intuition why some additional thinking is needed about
-the software that is used to provision those environment/agent(s) settings.
+the software that is used to provision those environment / agent(s) realms.
 
 Let's see how above can be described with Turing point:
 
@@ -61,62 +61,42 @@ import gym
 
 from stable_baselines3 import A2C
 
-import turingpoint as tp
+from turingpoint.gym_utils import (
+  AgentParticipant,
+  EnvironmentParticipant,
+  RenderParticipant,
+  GymAssembly
+)
 
 
-class MyAgent(tp.Agent):
-    def __init__(self, env, learn_initialy_total_timesteps=10_000, learn_online=False):
-        super().__init__(self)
-        self.model = A2C("MlpPolicy", env, verbose=1)
-        self.model.learn(learn_initialy_total_timesteps=learn_initialy_total_timesteps)
-        self.learn_online = learn_online
-        self.memory = {
-            ...
-        }
-
-    def _being(self) -> Generator[str, dict, None]:
-        obs = yield None
-        while True:
-            if self.learn_online:
-                pass # TODO:
-            if obs.get('done', False):
-                break
-            action, _state = self.model.predict(obs.get('obs'), deterministic=True) 
-            obs = yield action
-
-    def reset(self):
-        super().reset()
-        self.memory = {
-            ...
-        }
-
-
+# Creating the specific Gym environment.
 env = gym.make("CartPole-v1")
-agent = MyAgent(env)
 
-env_obs = env.reset()
-obs = {
-    'env_obs': env_obs # in this case
-}
+# An agent is created, it is injected with the environment.
+# The agent probably makes a copy of the passed environment, wraps it etc.
+model = A2C("MlpPolicy", env, verbose=1)
+
+# The agent is trained against its environment.
+# We can assume what is happening there (obs, action, reward, obs, ..), yet it is not explicit.
+model.learn(total_timesteps=10_000)
+
+# above starts the same
+
+# now ..
+
+vec_env = model.get_env()
+assembly = GymAssembly(vec_env, [
+    AgentParticipant(agent),
+    EnvironmentParticipant(vec_env),
+    RenderParticipant(vec_env)
+])
+
 for i in range(1000):
-    action = agent.react(obs)
-    env_obs, reward, done, info = env.step(action)
-    obs = {
-        'env_obs': env_obs, # in this case
-        'reward': reward, # in this case
-    }
-    if done:
-        obs['done'] = True
-    env.render()
-    if done:
-      env_obs = env.reset()
-      agent.reset()
+    assembly.launch()
 ```
 
 What did we gain and was it worth the extra coding? Let's add to the environment a second agent, wind, or maybe it is part of the augmented environment, does not really matter. Let's just add it.
 
-
-Below is wrong in many aspects. For example how will the environment learn that the wind influenced the angle etc. ### TODO!!:
 ====
 
 ```python
@@ -124,68 +104,44 @@ import gym
 
 from stable_baselines3 import A2C
 
-import turingpoint as tp
+from turingpoint.gym_utils import (
+  AgentParticipant,
+  EnvironmentParticipant,
+  RenderParticipant,
+  GymAssembly
+)
 
 
-class MyAgent(tp.Agent):
-    def __init__(self, env, learn_initialy_total_timesteps=10_000, learn_online=False):
-        super().__init__(self)
-        self.model = A2C("MlpPolicy", env, verbose=1)
-        self.model.learn(learn_initialy_total_timesteps=10_000)
-        self.learn_online = learn_online
-        self.memory = {
-            ...
-        }
-
-    def _being(self) -> Generator[str, dict, None]:
-        obs = yield None
-        while True:
-            if self.learn_online:
-                pass # TODO:
-            if obs.get('done', False):
-                break
-            action, _state = self.model.predict(obs.get('obs'), deterministic=True) 
-            obs = yield action
-
-    def reset(self):
-        super().reset()
-        self.memory = {
-            ...
-        }
-
-
-class MyWind(tp.Agent):
-    def _being(self) -> Generator[str, dict, None]:
-        obs = yield None
-        while True:
-            if obs.get('done', False):
-                break
-            action = "blow left" if random() < 0.5 else "blow right"
-            obs = yield action
-
-
+# Creating the specific Gym environment.
 env = gym.make("CartPole-v1")
-agent = MyAgent(env, learn_initialy_total_timesteps=0, learn_online=True)
-wind = MyWind()
 
-env_obs = env.reset()
-obs = {
-    'env_obs': env_obs, # in this case
-    'wind': wind.react({})
-}
+# An agent is created, it is injected with the environment.
+# The agent probably makes a copy of the passed environment, wraps it etc.
+model = A2C("MlpPolicy", env, verbose=1)
+
+# The agent is trained against its environment.
+# We can assume what is happening there (obs, action, reward, obs, ..), yet it is not explicit.
+model.learn(total_timesteps=10_000)
+
+def wind(parcel: dict) -> None:
+    action_wind = "blow left" if random() < 0.5 else "blow right"
+    parcel['action_wind'] = action_wind
+
+def wind_impact(parcel: dict) -> None:
+    action_wind = parcel['action_wind']
+    # We'll modify the action of the agent, given the wind,
+    # as we don't have here access to the state of the environment.
+    parcel['action'] = ...
+
+vec_env = model.get_env()
+assembly = GymAssembly(vec_env, [
+    AgentParticipant(agent),
+    wind,
+    wind_impact,
+    EnvironmentParticipant(vec_env),
+    RenderParticipant(vec_env)
+])
+
 for i in range(1000):
-    action = agent.react(obs)
-    env_obs, reward, done, info = env.step(action)
-    obs = {
-        'env_obs': env_obs, # in this case
-        'reward': reward, # in this case
-    }
-    if done:
-        obs['done'] = True
-    env.render()
-    if done:
-      env_obs = env.reset()
-      my_agent.reset()
-wind.react({'done': True})
+    assembly.launch()
 ```
-
