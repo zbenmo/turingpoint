@@ -107,7 +107,7 @@ def main():
         + learning_rate * (target_value - Qtable_frozenlake[obs][action])
       )
 
-    def end_iteraction(parcel: dict) -> None:
+    def end_iteration(parcel: dict) -> None:
       nonlocal steps
       
       parcel['obs'] = parcel['new_obs']
@@ -121,7 +121,7 @@ def main():
       agent,
       EnvironmentParticipant(env, save_obs_as="new_obs"),
       learning,
-      end_iteraction
+      end_iteration
     ])
 
     for episode in tqdm(range(num_episodes), desc="train"):
