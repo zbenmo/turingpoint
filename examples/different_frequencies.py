@@ -1,7 +1,7 @@
+from typing import Generator
 from turingpoint.assembly import Assembly
 from turingpoint.definitions import Participant
 from turingpoint.utils import print_parcel
-from typing import List, Generator
 
 
 def diffrent_frequencies():

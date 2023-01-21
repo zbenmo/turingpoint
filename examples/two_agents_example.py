@@ -1,8 +1,7 @@
-from dataclasses import dataclass
-from turingpoint.assembly import Assembly
-from turingpoint.definitions import Participant
-from turingpoint.utils import print_parcel
 from typing import Generator, Optional
+from dataclasses import dataclass
+from turingpoint import Assembly, Participant
+from turingpoint.utils import print_parcel
 
 
 @dataclass

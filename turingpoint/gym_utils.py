@@ -1,6 +1,5 @@
 from typing import Generator, List
-from turingpoint import Assembly
-from turingpoint.definitions import Participant
+from turingpoint import Assembly, Participant
 import stable_baselines3.common
 import gym
 

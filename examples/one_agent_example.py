@@ -1,7 +1,6 @@
-from turingpoint.assembly import Assembly
-from turingpoint.definitions import Participant
-from turingpoint.utils import print_parcel
 from typing import List, Generator
+from turingpoint import Assembly, Participant
+from turingpoint.utils import print_parcel
 
 
 def one_agent_example():
