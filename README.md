@@ -97,8 +97,6 @@ for i in range(1000):
 
 What did we gain and was it worth the extra coding? Let's add to the environment a second agent, wind, or maybe it is part of the augmented environment, does not really matter. Let's just add it.
 
-====
-
 ```python
 import gym
 
@@ -145,3 +143,11 @@ assembly = GymAssembly(vec_env, [
 for i in range(1000):
     assembly.launch()
 ```
+
+To install use for example:
+
+```
+pip install turingpoint
+```
+
+The examples are found in the homepage (github) under the 'examples' folder.
