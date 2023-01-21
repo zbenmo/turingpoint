@@ -8,7 +8,7 @@ Turing point integrates easily with existing RL libraries and your own custom co
 Integration of RL agents in the target applications should be significantly easier with Turing point.
 
 The main concept in Turing point is that there are multiple participants and each gets its turn.
-The participants communicate by a parcel that is passeed among them. The agent and the environment are both participants in that sense. No more confusion which of those should call which. Reward's logic, for example,
+The participants communicate by a parcel that is passed among them. The agent and the environment are both participants in that sense. No more confusion which of those should call which. Reward's logic, for example,
 can be addressed where you believe is most suitable.
 
 Turing point may be helpful with parallel or distributed training, yet it does not address those implicitly. On the contrary; with Turing point the flow is sequential between the participants. As far as we can tell Turing point at least does not hinder the use of parallel and / or parallel training.
