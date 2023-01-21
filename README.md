@@ -1,6 +1,6 @@
 # turingpoint
 
-Turing point is a Reinforcement Learning (RL) library.
+Turing point is a Reinforcement Learning (RL) library. It adds the missing duck tape.
 It allows for multiple (hetrogenous) agents seamlessly. Per-agent partial observation is natural with Turing point.
 Different agents can act in differnet frequencies.
 You may opt to continue using also the libraries that you're currently using, such as Gym, Stable-Baselines3, RLLib, etc.
@@ -11,7 +11,7 @@ The main concept in Turing point is that there are multiple participants and eac
 The participants communicate by a parcel that is passed among them. The agent and the environment are both participants in that sense. No more confusion which of those should call which. Reward's logic, for example,
 can be addressed where you believe is most suitable.
 
-Turing point may be helpful with parallel or distributed training, yet it does not address those implicitly. On the contrary; with Turing point the flow is sequential between the participants. As far as we can tell Turing point at least does not hinder the use of parallel and / or parallel training.
+Turing point may be helpful with parallel or distributed training, yet Turing point does not address those explicitly. On the contrary; with Turing point the flow is sequential among the participants. As far as we can tell Turing point at least does not hinder the use of parallel and / or distributed training.
 
 Participants can be added and / or removed dynamically (ex. a new "monster" enters or then "disappears").
 
