@@ -32,6 +32,22 @@ class EnvironmentParticipant(Participant):
     parcel['info'] = info
 
 
+class GymnasiumEnvironmentParticipant(Participant):
+  def __init__(self, env: gym.Env, save_obs_as="obs"):
+    self.env = env
+    self.save_obs_as = save_obs_as
+
+  def __call__(self, parcel: dict) -> None:
+    action = parcel['action']
+    obs, reward, terminated, truncated, info = self.env.step(action)
+    # this version of gym is still with done (if you have terminate + truncated) modify it accordingly
+    parcel[self.save_obs_as] = obs
+    parcel['reward'] = reward
+    parcel['terminated'] = terminated
+    parcel['truncated'] = truncated
+    parcel['info'] = info
+
+
 class RenderParticipant(Participant):
   def __init__(self, env: gym.Env):
     self.env = env
@@ -60,6 +76,33 @@ class GymAssembly(Assembly):
 
       nonlocal done
       done = parcel.get('done', False)
+
+    while not done:
+      yield from self.participants_list
+      yield check_done
+
+
+class GymnasiumAssembly(Assembly):
+  def __init__(self, env: gym.Env, participants_list: List[Participant]):
+    self.env = env
+    self.participants_list = participants_list
+
+  def create_initial_parcel(self) -> dict:
+    obs, info = self.env.reset()
+    parcel = {
+      'obs': obs,
+      'info': info
+    }
+    return parcel
+
+  def participants(self) -> Generator[Participant, None, None]:
+    done = False
+
+    def check_done(parcel: dict) -> None:
+      "a helper participant for checking for 'done' in the parcel"
+
+      nonlocal done
+      done = parcel.get('terminated', False) or parcel.get('truncated', False)
 
     while not done:
       yield from self.participants_list
