@@ -161,16 +161,15 @@ def main():
   print("after training")
   print(f'{mean_reward_after_train=}')
 
-  if False:
-    plt.plot(steps_record, losses)
-    plt.title("losses during training")
-    plt.ylim(0, 20)
-    plt.show()
+  plt.plot(steps_record, losses)
+  plt.title("losses during training")
+  plt.ylim(0, 20)
+  plt.show()
 
-    plt.plot(rewards)
-    plt.ylim(0, 220)
-    plt.title("rewards")
-    plt.show()
+  plt.plot(rewards)
+  plt.ylim(0, 220)
+  plt.title("rewards")
+  plt.show()
 
 
 if __name__ == "__main__":
