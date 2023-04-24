@@ -40,7 +40,6 @@ class GymnasiumEnvironmentParticipant(Participant):
   def __call__(self, parcel: dict) -> None:
     action = parcel['action']
     obs, reward, terminated, truncated, info = self.env.step(action)
-    # this version of gym is still with done (if you have terminate + truncated) modify it accordingly
     parcel[self.save_obs_as] = obs
     parcel['reward'] = reward
     parcel['terminated'] = terminated
