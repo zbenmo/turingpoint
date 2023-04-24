@@ -1,12 +1,12 @@
 # based on HuggingFace RL course (unit 2)
 
-import gym
+import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
-from turingpoint.gym_utils import (
+from turingpoint.gymnasium_utils import (
   EnvironmentParticipant,
-  GymAssembly
+  GymnasiumAssembly
 )
 
 
@@ -78,7 +78,7 @@ def main():
       reward = parcel['reward']
       total_reward += reward
 
-    assembly = GymAssembly(env, [agent, EnvironmentParticipant(env), bookkeeping])
+    assembly = GymnasiumAssembly(env, [agent, EnvironmentParticipant(env), bookkeeping])
 
     for _ in range(num_episodes):
       _ = assembly.launch()
@@ -117,7 +117,7 @@ def main():
       steps += 1
       parcel['done'] = parcel.get('done', False) or (steps == max_steps)
 
-    assembly = GymAssembly(env, [
+    assembly = GymnasiumAssembly(env, [
       agent,
       EnvironmentParticipant(env, save_obs_as="new_obs"),
       learning,

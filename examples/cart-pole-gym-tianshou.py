@@ -10,9 +10,8 @@ from tianshou.policy import (
 import torch
 from torch import nn
 
-from turingpoint.gym_utils import (
-  # AgentParticipant,
-  GymnasiumEnvironmentParticipant,
+from turingpoint.gymnasium_utils import (
+  EnvironmentParticipant,
   GymnasiumAssembly,
 )
 from turingpoint.utils import (
@@ -83,7 +82,7 @@ def main():
     assembly = GymnasiumAssembly(env, [
       # print_parcel,
       agent_participant,
-      GymnasiumEnvironmentParticipant(env),
+      EnvironmentParticipant(env),
       rewards_collector
     ])
 
@@ -126,7 +125,7 @@ def main():
 
     assembly = GymnasiumAssembly(env, [
       agent_participant,
-      GymnasiumEnvironmentParticipant(env, save_obs_as='obs_next'),
+      EnvironmentParticipant(env, save_obs_as='obs_next'),
       collector,
       end_iteration
     ])

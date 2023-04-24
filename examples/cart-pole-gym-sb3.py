@@ -1,12 +1,12 @@
 from stable_baselines3 import PPO
 from stable_baselines3.ppo.policies import MlpPolicy
-import gym
+import gymnasium as gym
 
-from turingpoint.gym_utils import (
-  AgentParticipant,
+from turingpoint.gymnasium_utils import (
   EnvironmentParticipant,
-  GymAssembly
+  GymnasiumAssembly
 )
+from turingpoint.sb3_utils import AgentParticipant
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
       reward = parcel['reward']
       total_reward += reward
 
-    assembly = GymAssembly(env, [
+    assembly = GymnasiumAssembly(env, [
       AgentParticipant(agent, deterministic=True),
       EnvironmentParticipant(env),
       bookkeeping
