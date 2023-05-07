@@ -72,7 +72,14 @@ def main():
       action = output_batch.act[0]
     parcel['action'] = action
 
-  def evaluate(num_episodes: int) -> float:
+  def evaluate(num_episodes: int) -> Tuple[float, List[float]]:
+    """
+    Args:
+      num_episodes: the evaluation is done for this number of episodes.
+
+    Returns:
+      The mean of the rewards and the rewards as a list.
+    """
 
     agent.set_eps(0.00)
 

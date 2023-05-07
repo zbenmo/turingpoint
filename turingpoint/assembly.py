@@ -29,7 +29,8 @@ class Assembly(ABC):
     it is the responsibility of (one or more) of the participants to close the generator.
     Closing the generator from a participant can be achieved by raising a flag or by raising an event. See examples.
 
-    The return value is the parcel as is at the end of the loop's execution.
+    Returns:
+      The return value is the parcel as is at the end of the loop's execution.
     """
     
     parcel = self.create_initial_parcel()
