@@ -59,7 +59,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#turing-point" class="md-skip">
+        <a href="#turingpoint" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +94,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Turing point
+              turingpoint
             
           </span>
         </div>
@@ -190,12 +190,12 @@
       
       
         <label class="md-nav__link md-nav__link--active" for="__toc">
-          Turing point
+          turingpoint
           <span class="md-nav__icon md-icon"></span>
         </label>
       
       <a href="." class="md-nav__link md-nav__link--active">
-        Turing point
+        turingpoint
       </a>
       
         
@@ -305,7 +305,7 @@
                   
 
 
-<h1 id="turing-point">Turing point</h1>
+<h1 id="turingpoint">turingpoint</h1>
 <p>Turing point is a Reinforcement Learning (RL) library. It adds the missing duck tape.
 It allows for multiple (hetrogenous) agents seamlessly. Per-agent partial observation is natural with Turing point.
 Different agents can act in differnet frequencies.
@@ -387,9 +387,9 @@ In the example, both the environment and the agent needs to be wrapped as a part
 </span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18"></a>
 </span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19"></a>    <span class="k">return</span> <span class="n">total_reward</span> <span class="o">/</span> <span class="n">num_episodes</span>
 </span></code></pre></div></td></tr></table></div>
-<p>In the example above <em>GymnasiumAssembly</em> is an implementation of the Assembly class that accepts a <em>Gymnasium</em> environment and a list of participants (agent before the environment, and potentially more). <em>GymnasiumAssembly</em> also has an implementation of <em>create_initial_parcel</em>, and it also adds an internal participant that checks for termination, and so <em>participants</em> generator of <em>GymnasiumAssembly</em> should return when relevant.</p>
+<p>In the example above <em>GymnasiumAssembly</em> is an implementation of the Assembly class that accepts a <em>Gymnasium</em> environment and a list of participants (usually first the agent, then the environment, and then potentially more). <em>GymnasiumAssembly</em> also has an implementation of <em>create_initial_parcel</em>, and it also adds an internal participant that checks for termination, and so <em>participants</em> generator of <em>GymnasiumAssembly</em> should return when relevant.</p>
 <p>Note that <em>launch</em> is being called as many time as needed (as many episodes as needed).
-A new parcel is created (behing the scenes) for every call of <em>launch</em>.
+A new parcel is created (behind the scenes) for every call of <em>launch</em>.
 Also note that <em>launch</em> is returning the parcel as is at the end of the episode, yet we've decided above to discard it (discard the parcel and not look into it).</p>
 
 
