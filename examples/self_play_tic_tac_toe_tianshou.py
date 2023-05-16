@@ -315,31 +315,35 @@ def self_play_tic_tac_toe(
         # self.rewards.append(best_reward if self.agent_under_training == 0 else -best_reward)
 
     def evaluate_agent(self, agent: Agent) -> Quality:
-    #   print(f'{self.rewards=}')
+      """Evaluates against a RandomPolicy.
+      10 times as the first player,
+      10 times as the second player.
+
+      Args:
+        agent: the agent to evaluate
+
+      Returns:
+        (the Quality) is the mean of the rewards for the 10+10=20 games.
+      """
       env = get_env()
 
       rewards = []
 
-      policy = MultiAgentPolicyManager([self.agent, RandomPolicy()], env)
+      policy = MultiAgentPolicyManager([agent, RandomPolicy()], env)
       policy.eval()
       test_collector = Collector(policy, self.test_envs, exploration_noise=True)
       result = test_collector.collect(n_episode=10, render=False)
-      rewards.extend(map(lambda rew: rew[0], result['rews']))
+      rewards.extend(rew[0] for rew in result['rews'])
 
-      policy = MultiAgentPolicyManager([RandomPolicy(), self.agent], env)
+      policy = MultiAgentPolicyManager([RandomPolicy(), agent], env)
       policy.eval()
       test_collector = Collector(policy, self.test_envs, exploration_noise=True)
       result = test_collector.collect(n_episode=10, render=False)
-      rewards.extend(map(lambda rew: rew[1], result['rews']))
+      rewards.extend(rew[1] for rew in result['rews'])
       
-    #   print(f'{rewards=}')
-
       return np.mean(rewards)
 
-    #   return result["rews"].mean()
-    # #   print("Final reward: {}, length: {}".format(result["rews"].mean(), result["lens"].mean()))
-
-    #   return np.mean(self.rewards) # 1200 # TODO: self.reward_metric() # TODO: at the moment there is a missing argument: rew
+      # 1200 # TODO: self.reward_metric() # TODO: at the moment there is a missing argument: rew
 
   tic_tac_toe_self_play = TicTacToeSelfPlay()
 
@@ -365,11 +369,14 @@ def self_play_tic_tac_toe(
 
   tic_tac_toe_self_play.launch(should_stop=should_stop, should_save=should_save)
 
-  x = list(range(len(mean_rewards)))
-  plt.plot(x, mean_rewards, 'o')
-  m, b = np.polyfit(x, mean_rewards, 1)
-  plt.plot(x, np.multiply(m, x) + b)
-  plt.show()
+  def plot_mean_rewards_over_time(mean_rewards):
+    x = list(range(len(mean_rewards)))
+    plt.plot(x, mean_rewards, 'o')
+    m, b = np.polyfit(x, mean_rewards, 1)
+    plt.plot(x, np.multiply(m, x) + b)
+    plt.show()
+
+  plot_mean_rewards_over_time(mean_rewards)
 
 
 if __name__ == "__main__":

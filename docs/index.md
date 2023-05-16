@@ -1,4 +1,4 @@
-# Turing point
+# turingpoint
 
 Turing point is a Reinforcement Learning (RL) library. It adds the missing duck tape.
 It allows for multiple (hetrogenous) agents seamlessly. Per-agent partial observation is natural with Turing point.
@@ -83,8 +83,8 @@ def evaluate(num_episodes: int) -> float:
     return total_reward / num_episodes
 ```
 
-In the example above *GymnasiumAssembly* is an implementation of the Assembly class that accepts a *Gymnasium* environment and a list of participants (agent before the environment, and potentially more). *GymnasiumAssembly* also has an implementation of *create_initial_parcel*, and it also adds an internal participant that checks for termination, and so *participants* generator of *GymnasiumAssembly* should return when relevant.
+In the example above *GymnasiumAssembly* is an implementation of the Assembly class that accepts a *Gymnasium* environment and a list of participants (usually first the agent, then the environment, and then potentially more). *GymnasiumAssembly* also has an implementation of *create_initial_parcel*, and it also adds an internal participant that checks for termination, and so *participants* generator of *GymnasiumAssembly* should return when relevant.
 
 Note that *launch* is being called as many time as needed (as many episodes as needed).
-A new parcel is created (behing the scenes) for every call of *launch*.
+A new parcel is created (behind the scenes) for every call of *launch*.
 Also note that *launch* is returning the parcel as is at the end of the episode, yet we've decided above to discard it (discard the parcel and not look into it).
