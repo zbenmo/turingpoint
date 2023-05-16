@@ -3,7 +3,7 @@ from turingpoint import Assembly, Participant
 import gymnasium as gym
 
 
-class EnvironmentParticipant(Participant):
+class EnvironmentParticipant:
   def __init__(self, env: gym.Env, save_obs_as="obs"):
     self._env = env
     self._save_obs_as = save_obs_as
@@ -18,7 +18,7 @@ class EnvironmentParticipant(Participant):
     parcel['info'] = info
 
 
-class RenderParticipant(Participant):
+class RenderParticipant:
   def __init__(self, env: gym.Env):
     self._env = env
 

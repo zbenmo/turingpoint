@@ -14,8 +14,7 @@ class Assembly(ABC):
     pass
 
   def launch(self) -> dict:
-    """
-    The 'launch' function is an episode (or main) loop of the evaluation / training / playing / deploying realm.
+    """The 'launch' function is an episode (or main) loop of the evaluation / training / playing / deploying realm.
     For example if you are running multiple episodes you'll probably be calling this function multiple times as needed.
     
     The initial parcel is created with a call to 'self.create_inital_parcel()',

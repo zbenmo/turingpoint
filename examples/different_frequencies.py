@@ -4,7 +4,7 @@ from turingpoint.definitions import Participant
 from turingpoint.utils import print_parcel
 
 
-def diffrent_frequencies():
+def different_frequencies():
   
   def participant1(parcel: dict) -> None:
     parcel['participant1'] = parcel.get('participant1', 0) + 1
@@ -36,4 +36,4 @@ def diffrent_frequencies():
 
 
 if __name__ == "__main__":
-  diffrent_frequencies()
+  different_frequencies()

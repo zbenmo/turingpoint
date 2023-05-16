@@ -1,5 +1,7 @@
 from pprint import pprint
-from typing import Generator
+from typing import Any, Generator, List
+
+from turingpoint.definitions import Participant
 
 
 def print_parcel(parcel: dict) -> None:
@@ -26,4 +28,11 @@ class Collector:
   def clear_entries(self) -> None:
     self._entries.clear()
 
+
+class Sequence():
+  def __init__(self, participants: List[Participant]):
+    self._participants = participants
   
+  def __call__(self, parcel: dict):
+    for participant in self._participants:
+      participant(parcel)

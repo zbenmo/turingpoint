@@ -7,6 +7,7 @@ from turingpoint.gymnasium_utils import (
   GymnasiumAssembly
 )
 from turingpoint.sb3_utils import AgentParticipant
+from turingpoint.utils import Collector
 
 
 def main():
@@ -14,22 +15,19 @@ def main():
   agent = PPO(MlpPolicy, env, verbose=0) # use verbose=1 for debugging
 
   def evaluate(num_episodes: int) -> float:
-    total_reward = 0
-
-    def bookkeeping(parcel: dict) -> None:
-      nonlocal total_reward
-
-      reward = parcel['reward']
-      total_reward += reward
+    rewards_collector = Collector(['reward'])
 
     assembly = GymnasiumAssembly(env, [
       AgentParticipant(agent, deterministic=True),
       EnvironmentParticipant(env),
-      bookkeeping
+      rewards_collector
     ])
 
     for _ in range(num_episodes):
       _ = assembly.launch()
+      # Note we're not clearing the rewards in 'rewards_collector', and so we continue to collect.
+
+    total_reward = sum(x['reward'] for x in rewards_collector.get_entries())
 
     return total_reward / num_episodes
 

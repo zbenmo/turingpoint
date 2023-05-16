@@ -3,10 +3,8 @@ from typing import Dict, List, Tuple
 import gymnasium as gym
 from tianshou.data import Batch, ReplayBuffer
 from tianshou.policy import (
-    # BasePolicy,
     DQNPolicy
 )
-# from tianshou.utils.net.common import Net
 import torch
 from torch import nn
 
@@ -16,7 +14,6 @@ from turingpoint.gymnasium_utils import (
 )
 from turingpoint.utils import (
   Collector,
-  # print_parcel
 )
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -61,13 +58,15 @@ def main():
   agent, optim = get_agent(env)
 
   def agent_participant(parcel: dict):
-    input_batch = Batch(
-      obs=np.array([parcel['obs']]),
-      info=np.array([{}])
-    )
+    action = None # till shown otherwise
+    # may take a random action as to explore
     if np.random.binomial(1, agent.eps):
       action = np.random.choice([0, 1])
     else:
+      input_batch = Batch(
+        obs=np.array([parcel['obs']]),
+        info=np.array([{}])
+      )
       output_batch = agent(input_batch, None)
       action = output_batch.act[0]
     parcel['action'] = action
@@ -83,7 +82,8 @@ def main():
 
     agent.set_eps(0.00)
 
-    # Note: Tianshou also has a concept of a Collector. Below is a Turingpoint Collector which is just yet another participant.
+    # Note: Tianshou also has a concept of a Collector.
+    # Below is a Turingpoint Collector which is just yet another participant.
     rewards_collector = Collector(['reward'])
 
     assembly = GymnasiumAssembly(env, [
@@ -118,7 +118,8 @@ def main():
 
   def train(total_timesteps):
 
-    # Note: Tianshou also has a concept of a Collector. Below is a Turingpoint Collector which is just yet another participant.
+    # Note: Tianshou also has a concept of a Collector.
+    # Below is a Turingpoint Collector which is just yet another participant.
     collector = Collector(['obs', 'action', 'reward', 'terminated', 'truncated', 'obs_next'])
 
     steps = 0
