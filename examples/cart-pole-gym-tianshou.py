@@ -97,9 +97,9 @@ def main():
 
     for _ in range(num_episodes):
       _ = assembly.launch()
-      total_reward = sum(x['reward'] for x in rewards_collector.entries)
+      total_reward = sum(x['reward'] for x in rewards_collector.get_entries())
       rewards.append(total_reward)
-      rewards_collector.entries.clear()
+      rewards_collector.clear_entries()
 
     return np.mean(rewards), rewards 
 
@@ -148,12 +148,12 @@ def main():
 
         pb.update(steps - last_steps)
         last_steps = steps
-        replay_buffer = to_tianshou_buffer(collector.entries)
+        replay_buffer = to_tianshou_buffer(list(collector.get_entries()))
         ret_from_update = agent.update(0, replay_buffer) 
         losses.append(ret_from_update['loss'])
         steps_record.append(steps)
         # should I clear the entries? should I clear first 64 entries? 64 stands for batch size? TODO: ..
-        collector.entries.clear()
+        collector.clear_entries()
 
     return steps_record, losses
 
