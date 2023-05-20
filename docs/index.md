@@ -1,6 +1,6 @@
 # turingpoint
 
-Turing point is a Reinforcement Learning (RL) library. It adds the missing duck tape.
+Turing point is a Reinforcement Learning (RL) library. It adds the missing duct tape.
 It allows for multiple (hetrogenous) agents seamlessly. Per-agent partial observation is natural with Turing point.
 Different agents can act in differnet frequencies.
 You may opt to continue using also the environment and the agent libraries that you're currently using, for the such as *Gym/Gymnasium*, *Stable-Baselines3*, *Tianshou*, *RLLib*, etc.
