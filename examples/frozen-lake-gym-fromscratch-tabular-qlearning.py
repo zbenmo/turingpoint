@@ -1,13 +1,14 @@
 # based on HuggingFace RL course (unit 2)
 
+import functools
+import itertools
 import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
-from turingpoint.gymnasium_utils import (
-  EnvironmentParticipant,
-  GymnasiumAssembly
-)
+import turingpoint.gymnasium_utils as tp_gym_utils
+import turingpoint as tp
+import turingpoint.utils as tp_utils
 
 
 # Training parameters
@@ -78,10 +79,19 @@ def main():
       reward = parcel['reward']
       total_reward += reward
 
-    assembly = GymnasiumAssembly(env, [agent, EnvironmentParticipant(env), bookkeeping])
+    def get_participants():
+       yield functools.partial(tp_gym_utils.call_reset, env=env)
+       yield from itertools.cycle([
+          agent,
+          functools.partial(tp_gym_utils.call_step, env=env),
+          bookkeeping,
+          tp_gym_utils.check_done
+       ])
+       
+    evaluate_assembly = tp.Assembly(get_participants)
 
     for _ in range(num_episodes):
-      _ = assembly.launch()
+      _ = evaluate_assembly.launch()
 
     return total_reward / num_episodes
 
@@ -110,25 +120,29 @@ def main():
     def end_iteration(parcel: dict) -> None:
       nonlocal steps
       
-      parcel['obs'] = parcel['new_obs']
-      del parcel['new_obs']
+      parcel['obs'] = parcel.pop('new_obs')
       del parcel['reward']
       del parcel['info']
       steps += 1
-      parcel['done'] = parcel.get('done', False) or (steps == max_steps)
+      parcel['truncated'] = parcel.get('truncated', False) or (steps == max_steps)
 
-    assembly = GymnasiumAssembly(env, [
-      agent,
-      EnvironmentParticipant(env, save_obs_as="new_obs"),
-      learning,
-      end_iteration
-    ])
+    def get_participants():
+       yield functools.partial(tp_gym_utils.call_reset, env=env)
+       yield from itertools.cycle([
+          agent,
+          functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="new_obs"),
+          learning,
+          end_iteration,
+          tp_gym_utils.check_done
+       ])
+
+    train_assembly = tp.Assembly(get_participants)
 
     for episode in tqdm(range(num_episodes), desc="train"):
       epsilon = min_epsilon + (max_epsilon - min_epsilon) * \
             np.exp(-decay_rate * episode)
       steps = 0
-      _ = assembly.launch()
+      _ = train_assembly.launch()
 
   train(n_training_episodes, min_epsilon, max_epsilon, decay_rate, max_steps)
 

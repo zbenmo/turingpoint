@@ -58,13 +58,20 @@ class Collector:
 
 Assembly in *turingpoint* is an abstract class that enables an "episodic" loop. One needs to provide implementation for the following member functions: *create_initial_parcel*, and *participants*.
 
-*participants* is participant generator. You can imagine a simple setting where you have a Gymnasium environment and a Stable-Baselines3 agent. The generator shall return once the agent, and then the environment, and so force.
+*get_participants* is a callable that returns an iterable or an iterator for the participants. You can imagine a simple setting where you have a Gymnasium environment and a Stable-Baselines3 agent. The iterator shall return once the agent, and then the environment, and so force.
 In the example, both the environment and the agent needs to be wrapped as a participant. That is to adapt the *step* and *predict* API accordingly.
 
-*create_initial_parcel* needs to return a dict with the initial observation for example (from *env.reset()*).
-
 ``` py linenums="1"
-def evaluate(num_episodes: int) -> float:
+import functools
+import itertools
+
+import turingpoint.gymnasium_utils as tp_gym_utils
+import turingpoint.sb3_utils as tp_sb3_utils
+import turingpoint.utils as tp_utils
+import turingpoint as tp
+
+
+def evaluate(env, agent, num_episodes: int) -> float:
     total_reward = 0
 
     def bookkeeping(parcel: dict) -> None:
@@ -73,19 +80,25 @@ def evaluate(num_episodes: int) -> float:
         reward = parcel['reward']
         total_reward += reward
 
-    assembly = GymnasiumAssembly(env, [
-        AgentParticipant(agent, deterministic=True),
-        EnvironmentParticipant(env),
-        bookkeeping
-    ])
+    def get_participants():
+      yield functools.partial(tp_gym_utils.call_reset, env=env)
+      yield from itertools.cycle([
+          functools.partial(
+            tp_sb3_utils.call_predict,
+            agent=agent, deterministic=True
+          ),
+          functools.partial(tp_gym_utils.call_step, env=env),
+          bookkeeping,
+          tp_gym_utils.check_done
+      ]) 
 
+    assembly = tp.Assembly(get_participants)
+      
     for _ in range(num_episodes):
         _ = assembly.launch()
 
     return total_reward / num_episodes
 ```
-
-In the example above *GymnasiumAssembly* is an implementation of the Assembly class that accepts a *Gymnasium* environment and a list of participants (usually first the agent, then the environment, and then potentially more). *GymnasiumAssembly* also has an implementation of *create_initial_parcel*, and it also adds an internal participant that checks for termination, and so *participants* generator of *GymnasiumAssembly* should return when relevant.
 
 Note that *launch* is being called as many time as needed (as many episodes as needed).
 A new parcel is created (behind the scenes) for every call of *launch*.

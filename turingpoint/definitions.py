@@ -12,3 +12,10 @@ class Participant(Protocol):
     Outputs should also go into the same parcel.
     """
     ...
+
+
+class Done(Exception):
+  """
+  Used for example to indicate an episode is done.
+  """
+  pass

@@ -43,7 +43,7 @@ for i in range(1000):
     # Also note. The environment is aware of the agent. This is how the environment was designed.
     # The action space of the agent is coded in the environment.
     # The observation space is intended for the agent and reflects probably also what the agent should know about itself.
-    # The _state output is a bit suspicious. It is here probably as the model also predicts the state.
+    # The _state output is related to RNNs, AFAIK.
     action, _state = model.predict(obs, deterministic=True)
     # Here the reward, done, and info outputs are just for our evaluation.
     # Mainly what is happening here is that the environment moves to a new state.
@@ -65,73 +65,66 @@ the software that is used to provision those environment / agent(s) realms.
 Let's see how above can be described with Turing point:
 
 ```python
-import gym
-
-from stable_baselines3 import A2C
-
-from turingpoint.gym_utils import (
-  AgentParticipant,
-  EnvironmentParticipant,
-  RenderParticipant,
-  GymAssembly
-)
+...
+import turingpoint.gymnasium_utils as tp_gym_utils
+import turingpoint.sb3_utils as tp_sb3_utils
+import turingpoint.utils as tp_utils
+import turingpoint as tp
 
 
-# Creating the specific Gym environment.
-env = gym.make("CartPole-v1")
+def evaluate(env, agent, num_episodes: int) -> float:
 
-# An agent is created, it is injected with the environment.
-# The agent probably makes a copy of the passed environment, wraps it etc.
-model = A2C("MlpPolicy", env, verbose=1)
+  rewards_collector = tp_utils.Collector(['reward'])
 
-# The agent is trained against its environment.
-# We can assume what is happening there (obs, action, reward, obs, ..), yet it is not explicit.
-model.learn(total_timesteps=10_000)
+  def get_participants():
+    yield functools.partial(tp_gym_utils.call_reset, env=env)
+    yield from itertools.cycle([
+        functools.partial(tp_sb3_utils.call_predict, agent=agent, deterministic=True),
+        functools.partial(tp_gym_utils.call_step, env=env),
+        rewards_collector,
+        tp_gym_utils.check_done
+    ]) 
 
-# above starts the same
+  evaluate_assembly = tp.Assembly(get_participants)
 
-# now ..
+  for _ in range(num_episodes):
+    _ = evaluate_assembly.launch()
+    # Note that we don't clear the rewards in 'rewards_collector', and so we continue to collect.
 
-vec_env = model.get_env()
-assembly = GymAssembly(vec_env, [
-    AgentParticipant(agent),
-    EnvironmentParticipant(vec_env),
-    RenderParticipant(vec_env)
-])
+  total_reward = sum(x['reward'] for x in rewards_collector.get_entries())
 
-for i in range(1000):
-    assembly.launch()
+  return total_reward / num_episodes
+
+..
+
+def main():
+
+  random.seed(1)
+  np.random.seed(1)
+  torch.manual_seed(1)
+
+  env = gym.make('CartPole-v1')
+
+  env.reset(seed=1)
+
+  agent = PPO(MlpPolicy, env, verbose=0) # use verbose=1 for debugging
+
+  mean_reward_before_train = evaluate(env, agent, 100)
+  print("before training")
+  print(f'{mean_reward_before_train=}')
+
+..
 ```
 
 What did we gain and was it worth the extra coding? Let's add to the environment a second agent, wind, or maybe it is part of the augmented environment, does not really matter. Let's just add it.
 
 ```python
-import gym
-
-from stable_baselines3 import A2C
-
-from turingpoint.gym_utils import (
-  AgentParticipant,
-  EnvironmentParticipant,
-  RenderParticipant,
-  GymAssembly
-)
-
-
-# Creating the specific Gym environment.
-env = gym.make("CartPole-v1")
-
-# An agent is created, it is injected with the environment.
-# The agent probably makes a copy of the passed environment, wraps it etc.
-model = A2C("MlpPolicy", env, verbose=1)
-
-# The agent is trained against its environment.
-# We can assume what is happening there (obs, action, reward, obs, ..), yet it is not explicit.
-model.learn(total_timesteps=10_000)
+..
 
 def wind(parcel: dict) -> None:
     action_wind = "blow left" if random() < 0.5 else "blow right"
     parcel['action_wind'] = action_wind
+
 
 def wind_impact(parcel: dict) -> None:
     action_wind = parcel['action_wind']
@@ -139,17 +132,31 @@ def wind_impact(parcel: dict) -> None:
     # as we don't have here access to the state of the environment.
     parcel['action'] = ...
 
-vec_env = model.get_env()
-assembly = GymAssembly(vec_env, [
-    AgentParticipant(agent),
-    wind,
-    wind_impact,
-    EnvironmentParticipant(vec_env),
-    RenderParticipant(vec_env)
-])
 
-for i in range(1000):
-    assembly.launch()
+def evaluate(env, agent, num_episodes: int) -> float:
+
+  rewards_collector = tp_utils.Collector(['reward'])
+
+  def get_participants():
+    yield functools.partial(tp_gym_utils.call_reset, env=env)
+    yield from itertools.cycle([
+        functools.partial(tp_sb3_utils.call_predict, agent=agent, deterministic=True),
+        wind,
+        wind_impact,
+        functools.partial(tp_gym_utils.call_step, env=env),
+        rewards_collector,
+        tp_gym_utils.check_done
+    ]) 
+
+  evaluate_assembly = tp.Assembly(get_participants)
+
+  for _ in range(num_episodes):
+    _ = evaluate_assembly.launch()
+    # Note that we don't clear the rewards in 'rewards_collector', and so we continue to collect.
+
+  total_reward = sum(x['reward'] for x in rewards_collector.get_entries())
+
+  return total_reward / num_episodes
 ```
 
 To install use for example:

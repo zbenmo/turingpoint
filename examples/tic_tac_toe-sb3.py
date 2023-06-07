@@ -1,3 +1,5 @@
+import functools
+import itertools
 import gymnasium as gym
 import numpy as np
 import pettingzoo as pz
@@ -6,6 +8,7 @@ from turingpoint.definitions import Participant
 import turingpoint.sb3_utils as sb3_utils
 import turingpoint.pz_utils as pz_utils
 import turingpoint.utils as tp_utils
+import turingpoint as tp
 from stable_baselines3 import PPO
 from stable_baselines3.ppo.policies import MlpPolicy, MultiInputPolicy
 import logging
@@ -66,30 +69,29 @@ def extract_obs_and_action_mask(parcel: dict):
 
 def main():
     env = tictactoe_v3.env(render_mode="human")
-    env_participant = pz_utils.AECEnvParticipant(env)
+    env_participant = functools.partial(pz_utils.call_step, env=env)
 
     ppo = PPO(
         MultiInputPolicy, # MlpPolicy,
         dummy_gym_env_based_on_pettingzoo(env, "player_1"),
         verbose=0
     ) # use verbose=1 for debugging
-    player = sb3_utils.AgentParticipant(ppo)
+    player = functools.partial(sb3_utils.call_predict, agent=ppo)
     other_player = pick_a_free_square
 
-#     our_player_turn = tp_utils.Sequence([
-# #        extract_obs_and_action_mask,
-#     ])
+    def get_participants():
+        yield functools.partial(pz_utils.call_reset, env=env)
+        yield from itertools.cycle([
+            skip_me_if_I_am_done(tp_utils.Sequence([player, ensure_a_valid_action])),
+            env_participant,
+            skip_me_if_I_am_done(other_player),
+            env_participant,
+            pz_utils.check_done
+        ])
 
-#     other_player_turn = tp_utils.Sequence([
-#     ])
 
-    assembly = pz_utils.AECAssembly(env, [
-        skip_me_if_I_am_done(tp_utils.Sequence([player, ensure_a_valid_action])),
-        env_participant,
-        skip_me_if_I_am_done(other_player),
-        env_participant
-    ])
-
+    assembly = tp.Assembly(get_participants)
+    
     assembly.launch()
 
 

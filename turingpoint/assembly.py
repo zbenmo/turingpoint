@@ -1,38 +1,45 @@
-from abc import ABC, abstractmethod
-from typing import Generator
-from .definitions import *
+from typing import Callable, Iterable, Iterator, Union
+from .definitions import Participant, Done
 
 
-class Assembly(ABC):
+class Assembly:
+  """
+  This class contains a loop that goes over the participants and passes the parcel among those.
+  """
 
-  @abstractmethod
-  def create_initial_parcel(self) -> dict:
-    pass
+  def __init__(self,
+               get_patricipants: Callable[[], Union[Iterator[Participant], Iterable[Participant]]]):
+    """ constructor
 
-  @abstractmethod
-  def participants(self) -> Generator[Participant, None, None]:
-    pass
+    Args:
+      get_participants: A callable that returns an iterable or an iterator for the participants.
+    """
 
-  def launch(self) -> dict:
-    """The 'launch' function is an episode (or main) loop of the evaluation / training / playing / deploying realm.
-    For example if you are running multiple episodes you'll probably be calling this function multiple times as needed.
+    self._get_participants = get_patricipants
+
+  def launch(self):
+    """The 'launch' function is an episode (or main) loop
+    of the evaluation / training / playing / deploying realm.
+    For example if you are running multiple episodes you'll probably be
+    calling this function multiple times as needed.
     
-    The initial parcel is created with a call to 'self.create_inital_parcel()',
-    which in turn shall, for example, set the initial observations.
+    The initial empty parcel is created here.
     Next this function (launch) calls the parcipitants each at its turn.
 
-    The 'self.parcipitants' generator can be based for example on a list,
-    where once the end of the list is reached, the generator goes back to the start of the list.
-    
-    Given that the 'participants' generator is potentially infinite,
-    it is the responsibility of (one or more) of the participants to close the generator.
-    Closing the generator from a participant can be achieved by raising a flag or by raising an event. See examples.
+    Given that the 'get_patricipants' may potentially return iterators that are infinite,
+    it is the responsibility of (one or more) of the participants to stop the iterator.
+    One option to stop the iterator is to raise turingpoint.Done exception which is handled silently here.
 
     Returns:
       The return value is the parcel as is at the end of the loop's execution.
     """
-    
-    parcel = self.create_initial_parcel()
-    for participant in self.participants():
-      participant(parcel)
+
+    parcel = {}
+    try:
+      for participant in self._get_participants():
+        if participant is None:
+          continue
+        participant(parcel)
+    except Done:
+      pass
     return parcel
