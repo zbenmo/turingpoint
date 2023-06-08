@@ -31,13 +31,13 @@ def skip_me_if_I_am_done(participant: Participant):
 
 
 def pick_a_free_square(parcel: dict):
-    action_mask = parcel['obs']['action_mask'] # parcel['action_mask']
+    action_mask = parcel['obs']['action_mask']
     possible_actions = np.where(action_mask == 1)[0]
     parcel['action'] = np.random.choice(possible_actions)
 
 
 def ensure_a_valid_action(parcel: dict):
-    action_mask = parcel['obs']['action_mask'] # parcel['action_mask']
+    action_mask = parcel['obs']['action_mask']
     desired_action = parcel['action'] 
     if action_mask[desired_action]:
         return # we'll stick with the current action
@@ -49,22 +49,12 @@ def ensure_a_valid_action(parcel: dict):
 def dummy_gym_env_based_on_pettingzoo(pz_env: pz.AECEnv, agent_id: str) -> gym.Env:
     """This function is needed here as of the interface of sb3, it needs a Gymnasium environment in its constructor,
     to take from it the observation_space and the action_space.
-    Note that we only take the observation and drop the action_mask. 
     """
     class Env(gym.Env):
         def __init__(self):
-            self.observation_space = pz_env.observation_space(agent_id) # ['observation']
+            self.observation_space = pz_env.observation_space(agent_id)
             self.action_space = pz_env.action_space(agent_id)
     return Env()
-
-
-def extract_obs_and_action_mask(parcel: dict):
-  """The PZ tictactoe_v3 environment returns 'action_mask' inside
-  the observation, and next to it we have 'observation' which is the state of the board.
-  """
-  observation, action_mask = (parcel['obs'][x] for x in ['observation', 'action_mask'])
-  parcel['obs'] = observation # overriding the previous value
-  parcel['action_mask'] = action_mask
 
 
 def main():
