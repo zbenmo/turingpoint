@@ -11,15 +11,15 @@ import turingpoint.utils as tp_utils
 import turingpoint as tp
 from stable_baselines3 import PPO
 from stable_baselines3.ppo.policies import MlpPolicy, MultiInputPolicy
-import logging
+# import logging
 # from sb3_contrib import MaskablePPO
 
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+# logging.basicConfig(level=logging.INFO)
 
 
-def skip_me_if_I_am_done(participant: Participant):
+def skip_me_if_I_am_done(participant: Participant) -> Participant:
     def wrapped(parcel: dict):
         terminated = parcel.get('terminated', False)
         truncated = parcel.get('truncated', False)
@@ -30,6 +30,7 @@ def skip_me_if_I_am_done(participant: Participant):
     return wrapped
 
 
+@skip_me_if_I_am_done
 def pick_a_free_square(parcel: dict):
     action_mask = parcel['obs']['action_mask']
     possible_actions = np.where(action_mask == 1)[0]
@@ -47,7 +48,8 @@ def ensure_a_valid_action(parcel: dict):
 
 
 def dummy_gym_env_based_on_pettingzoo(pz_env: pz.AECEnv, agent_id: str) -> gym.Env:
-    """This function is needed here as of the interface of sb3, it needs a Gymnasium environment in its constructor,
+    """This function is needed here as of the interface of sb3;
+    it needs a Gymnasium environment in its constructor,
     to take from it the observation_space and the action_space.
     """
     class Env(gym.Env):
@@ -67,18 +69,27 @@ def main():
         verbose=0
     ) # use verbose=1 for debugging
     player = functools.partial(sb3_utils.call_predict, agent=ppo)
-    other_player = pick_a_free_square
+    player = tp_utils.make_sequence([player, ensure_a_valid_action])
+    player = skip_me_if_I_am_done(player)
+    other_player = pick_a_free_square # it is already wrapped in 'skip_me_if_I_am_done'
+
+    def assert_player_1_turn(parcel: dict):
+        assert parcel['agent'] == 'player_1'
+
+    def assert_player_2_turn(parcel: dict):
+        assert parcel['agent'] == 'player_2'
 
     def get_participants():
         yield functools.partial(pz_utils.call_reset, env=env)
         yield from itertools.cycle([
-            skip_me_if_I_am_done(tp_utils.Sequence([player, ensure_a_valid_action])),
+            assert_player_1_turn,
+            player,
             env_participant,
-            skip_me_if_I_am_done(other_player),
+            assert_player_2_turn,
+            other_player,
             env_participant,
             pz_utils.check_done
         ])
-
 
     assembly = tp.Assembly(get_participants)
     

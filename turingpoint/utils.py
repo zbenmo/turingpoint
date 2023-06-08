@@ -29,10 +29,8 @@ class Collector:
     self._entries.clear()
 
 
-class Sequence():
-  def __init__(self, participants: List[Participant]):
-    self._participants = participants
-  
-  def __call__(self, parcel: dict):
-    for participant in self._participants:
+def make_sequence(participants: List[Participant]) -> Participant:
+  def wrapped(parcel: dict):
+    for participant in participants:
       participant(parcel)
+  return wrapped
