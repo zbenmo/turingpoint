@@ -3,7 +3,7 @@
 Turing point is a Reinforcement Learning (RL) library. It adds the missing duct tape.
 It allows for multiple (hetrogenous) agents seamlessly. Per-agent partial observation is natural with Turing point.
 Different agents can act in differnet frequencies.
-You may opt to continue using also the environment and the agent libraries that you're currently using, for the such as *Gym/Gymnasium*, *Stable-Baselines3*, *Tianshou*, *RLLib*, etc.
+You may opt to continue using also the environment and the agent libraries that you're currently using, such as *Gym/Gymnasium*, *PettingZoo*, *Stable-Baselines3*, *Tianshou*, *RLLib*, etc.
 Turing point integrates easily with existing RL libraries and your own custom code.
 Integration of RL agents in the target applications should be significantly easier with Turing point.
 
@@ -14,6 +14,14 @@ can be addressed where you believe is most suitable.
 Turing point may be helpful with parallel or distributed training, yet Turing point does not address those explicitly. On the contrary; with Turing point the flow is sequential among the participants. As far as we can tell Turing point at least does not hinder the use of parallel and/or distributed training.
 
 Participants can be added and/or removed dynamically (ex. a new "monster" enters or then "disappears").
+
+## TL;DR
+
+```
+pip install turingpoint
+```
+
+And check the examples folder under [github](https://github.com/zbenmo/turingpoint).
 
 ## Participant
 
