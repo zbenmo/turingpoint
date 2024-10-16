@@ -132,3 +132,6 @@ dmypy.json
 log/
 old/
 tianshou/
+
+# TensorBoard
+runs/

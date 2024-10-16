@@ -64,9 +64,9 @@ class Collector:
 
 ## Assembly
 
-Assembly in *turingpoint* is an abstract class that enables an "episodic" loop. One needs to provide implementation for the following member functions: *create_initial_parcel*, and *participants*.
+Assembly in *turingpoint* is a class that enables an "episodic" loop (yet not restricted to "episodic" and can be used in additional looping logics). One needs to provide in the construction implementation for the following callable: *get_participants*.
 
-*get_participants* is a callable that returns an iterable or an iterator for the participants. You can imagine a simple setting where you have a Gymnasium environment and a Stable-Baselines3 agent. The iterator shall return once the agent, and then the environment, and so force.
+*get_participants* is a callable that returns an iterable or an iterator for the participants. You can imagine a simple setting where you have a Gymnasium environment and a Stable-Baselines3 agent. The iterator shall yield once the agent, and then the environment, and so force.
 In the example, both the environment and the agent needs to be wrapped as a participant. That is to adapt the *step* and *predict* API accordingly.
 
 ``` py linenums="1"
