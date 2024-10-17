@@ -365,8 +365,8 @@ On the other hand, if the key <em>obs</em> was there before the call, it should 
 </span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>    <span class="bp">self</span><span class="o">.</span><span class="n">_entries</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
 </span></code></pre></div>
 <h2 id="assembly">Assembly</h2>
-<p>Assembly in <em>turingpoint</em> is an abstract class that enables an "episodic" loop. One needs to provide implementation for the following member functions: <em>create_initial_parcel</em>, and <em>participants</em>.</p>
-<p><em>get_participants</em> is a callable that returns an iterable or an iterator for the participants. You can imagine a simple setting where you have a Gymnasium environment and a Stable-Baselines3 agent. The iterator shall return once the agent, and then the environment, and so force.
+<p>Assembly in <em>turingpoint</em> is a class that enables an "episodic" loop (yet not restricted to "episodic" and can be used in additional looping logics). One needs to provide in the construction implementation for the following callable: <em>get_participants</em>.</p>
+<p><em>get_participants</em> is a callable that returns an iterable or an iterator for the participants. You can imagine a simple setting where you have a Gymnasium environment and a Stable-Baselines3 agent. The iterator shall yield once the agent, and then the environment, and so force.
 In the example, both the environment and the agent needs to be wrapped as a participant. That is to adapt the <em>step</em> and <em>predict</em> API accordingly.</p>
 <div class="language-py highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-3-1"> 1</a></span>
 <span class="normal"><a href="#__codelineno-3-2"> 2</a></span>
