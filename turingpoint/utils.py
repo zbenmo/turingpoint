@@ -1,5 +1,5 @@
 from pprint import pprint
-from typing import Any, Generator, List
+from typing import Any, Generator, List, Sequence
 
 from turingpoint.definitions import Participant
 
@@ -34,3 +34,18 @@ def make_sequence(participants: List[Participant]) -> Participant:
     for participant in participants:
       participant(parcel)
   return wrapped
+
+
+def discounted_reward_to_go(rewards: Sequence[float], gamma=1.0) -> Sequence[float]:
+    """
+    Helper function which takes a list of rewards {r_0, r_1, ..., r_t', ... r_T} and returns a list where the entry
+    in each index t' is sum_{t'=t}^T gamma^(t'-t) * r_{t'}.
+
+    Copied from homeworks - Berkeley CS 285
+    """
+    ret = []
+    discounted_return = 0.
+    for reward in reversed(rewards):
+        discounted_return = discounted_return * gamma + reward
+        ret.insert(0, discounted_return)
+    return ret

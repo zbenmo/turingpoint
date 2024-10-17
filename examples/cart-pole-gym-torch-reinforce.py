@@ -13,7 +13,8 @@ import turingpoint.gymnasium_utils as tp_gym_utils
 import turingpoint.utils as tp_utils
 import turingpoint as tp
 
-class Reinforce(nn.Module):
+
+class StateToActionLogProb(nn.Module):
   def __init__(self, in_features, out_features, *args, **kwargs):
     super().__init__(*args, **kwargs)
     hidden_features = 10
@@ -29,7 +30,7 @@ class Reinforce(nn.Module):
     return self.net(obs)
 
 
-def get_action(parcel: Dict, *, agent: Reinforce):
+def get_action(parcel: Dict, *, agent: StateToActionLogProb):
   """Picks a random action based on the probabilities that the agent assigns.
   Just needs to account for the fact the the agent actually returns log probabilities rather than probabilities.
   """
@@ -91,9 +92,11 @@ def collect_episodes(env, agent, num_episodes=40) -> List[List[Dict]]:
 
 
 def train(env, agent, total_timesteps):
+  causality_to_be_accounted_for = True
+  normilize_the_rewards = True
     
   optimizer = torch.optim.Adam(agent.parameters(), lr=0.0001)
-  writer = SummaryWriter() # TensorBoard
+  writer = SummaryWriter(f"runs/reinforce_{causality_to_be_accounted_for=}_{normilize_the_rewards=}") # TensorBoard
 
   timesteps = 0
   with tqdm(total=total_timesteps, desc="training steps") as pbar:
@@ -109,12 +112,17 @@ def train(env, agent, total_timesteps):
       log_probs_batch = []
       rewards_batch = []
 
+      total_rewards = []
+
       for episode in episodes:
         log_prob, rewards = zip(*((e['log_prob'], e['reward']) for e in episode))
         total_reward = sum(rewards)
+        total_rewards.append(total_reward)
         log_probs_batch.extend(log_prob)
-        rewards_batch.extend([total_reward] * len(log_prob)) # we'll assign to all actions the total reward
-        # (there are smarter things to do. Not shown here.)
+        if causality_to_be_accounted_for:
+          rewards_batch.extend(tp_utils.discounted_reward_to_go(rewards))
+        else:
+          rewards_batch.extend([total_reward] * len(log_prob)) # we'll assign to all actions the total reward
 
       optimizer.zero_grad()
 
@@ -123,13 +131,14 @@ def train(env, agent, total_timesteps):
 
       assert len(log_probs_batch_tensor) == len(rewards_tensor)
 
-      rewards_mean = rewards_tensor.mean()
-      rewards_tensor -= rewards_mean # center the rewards
+      if normilize_the_rewards:
+        rewards_tensor -= rewards_tensor.mean()
+        rewards_tensor /= rewards_tensor.std()
 
       timesteps += len(log_probs_batch_tensor)
 
       loss = -log_probs_batch_tensor @ rewards_tensor
-      writer.add_scalar("Mean Rewards/train", rewards_mean, timesteps)
+      writer.add_scalar("Mean Rewards/train", np.mean(total_rewards), timesteps)
       writer.add_scalar("Loss/train", loss, timesteps)
 
       loss.backward()
@@ -156,7 +165,7 @@ def main():
   state_space = env.observation_space.shape[0]
   action_space = env.action_space.n
 
-  agent = Reinforce(state_space, action_space)
+  agent = StateToActionLogProb(state_space, action_space)
 
   mean_reward_before_train = evaluate(env, agent, 100)
   print("before training")
