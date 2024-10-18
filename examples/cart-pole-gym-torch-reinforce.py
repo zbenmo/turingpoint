@@ -14,7 +14,7 @@ import turingpoint.utils as tp_utils
 import turingpoint as tp
 
 
-class StateToActionLogProb(nn.Module):
+class StateToActionLogits(nn.Module):
   def __init__(self, in_features, out_features, *args, **kwargs):
     super().__init__(*args, **kwargs)
     hidden_features = 10
@@ -30,17 +30,17 @@ class StateToActionLogProb(nn.Module):
     return self.net(obs)
 
 
-def get_action(parcel: Dict, *, agent: StateToActionLogProb):
+def get_action(parcel: Dict, *, agent: StateToActionLogits):
   """Picks a random action based on the probabilities that the agent assigns.
   Just needs to account for the fact the the agent actually returns log probabilities rather than probabilities.
   """
   obs = parcel['obs']
-  log_probs = agent(torch.tensor(obs))
-  probs = torch.exp(log_probs)
-  probs /= probs.sum()
+  logits = agent(torch.tensor(obs))
+  exps = torch.exp(logits)
+  probs = exps / exps.sum()
   action = torch.multinomial(probs, 1).item()
   parcel['action'] = action
-  parcel['log_prob'] = log_probs[action] # may be useful for the training (note: still a tensor)
+  parcel['prob'] = probs[action] # may be useful for the training (note: still a tensor)
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -69,7 +69,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
 def collect_episodes(env, agent, num_episodes=40) -> List[List[Dict]]:
 
-  collector = tp_utils.Collector(['log_prob', 'reward']) # it seems that those are enough for Reinforce
+  collector = tp_utils.Collector(['prob', 'reward']) # it seems that those are enough for Reinforce
 
   def get_episode_participants():
     yield functools.partial(tp_gym_utils.call_reset, env=env)
@@ -109,24 +109,24 @@ def train(env, agent, total_timesteps):
       # potentially a usage of pandas/polars, numpy, or torch. 
       # I'm KISSing it here.
 
-      log_probs_batch = []
+      probs_batch = []
       rewards_batch = []
 
       total_rewards = []
 
       for episode in episodes:
-        log_prob, rewards = zip(*((e['log_prob'], e['reward']) for e in episode))
+        probs, rewards = zip(*((e['prob'], e['reward']) for e in episode))
         total_reward = sum(rewards)
         total_rewards.append(total_reward)
-        log_probs_batch.extend(log_prob)
+        probs_batch.extend(probs)
         if causality_to_be_accounted_for:
           rewards_batch.extend(tp_utils.discounted_reward_to_go(rewards))
         else:
-          rewards_batch.extend([total_reward] * len(log_prob)) # we'll assign to all actions the total reward
+          rewards_batch.extend([total_reward] * len(probs)) # we'll assign to all actions the total reward
 
       optimizer.zero_grad()
 
-      log_probs_batch_tensor = torch.stack(log_probs_batch, dim=0)
+      log_probs_batch_tensor = torch.stack(probs_batch, dim=0).log()
       rewards_tensor = torch.tensor(rewards_batch)
 
       assert len(log_probs_batch_tensor) == len(rewards_tensor)
@@ -165,7 +165,7 @@ def main():
   state_space = env.observation_space.shape[0]
   action_space = env.action_space.n
 
-  agent = StateToActionLogProb(state_space, action_space)
+  agent = StateToActionLogits(state_space, action_space)
 
   mean_reward_before_train = evaluate(env, agent, 100)
   print("before training")
