@@ -1,3 +1,4 @@
+import datetime
 import functools
 import itertools
 import random
@@ -32,7 +33,7 @@ class StateToActionLogits(nn.Module):
 
 def get_action(parcel: Dict, *, agent: StateToActionLogits):
   """Picks a random action based on the probabilities that the agent assigns.
-  Just needs to account for the fact the the agent actually returns log probabilities rather than probabilities.
+  Just needs to account for the fact the the agent actually returns logits rather than probabilities.
   """
   obs = parcel['obs']
   logits = agent(torch.tensor(obs))
@@ -69,7 +70,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
 def collect_episodes(env, agent, num_episodes=40) -> List[List[Dict]]:
 
-  collector = tp_utils.Collector(['prob', 'reward']) # it seems that those are enough for Reinforce
+  collector = tp_utils.Collector(['prob', 'reward']) # it seems that those are enough for REINFORCE
 
   def get_episode_participants():
     yield functools.partial(tp_gym_utils.call_reset, env=env)
@@ -96,11 +97,16 @@ def train(env, agent, total_timesteps):
   normilize_the_rewards = True
     
   optimizer = torch.optim.Adam(agent.parameters(), lr=0.0001)
-  writer = SummaryWriter(f"runs/reinforce_{causality_to_be_accounted_for=}_{normilize_the_rewards=}") # TensorBoard
+  writer = SummaryWriter(
+    f"runs/reinforce_{causality_to_be_accounted_for=}_{normilize_the_rewards=}_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}"
+  ) # TensorBoard
 
   timesteps = 0
   with tqdm(total=total_timesteps, desc="training steps") as pbar:
     while timesteps < total_timesteps:
+
+      optimizer.zero_grad()
+
       episodes = collect_episodes(env, agent)
 
       # Now learn from above episodes
@@ -124,8 +130,6 @@ def train(env, agent, total_timesteps):
         else:
           rewards_batch.extend([total_reward] * len(probs)) # we'll assign to all actions the total reward
 
-      optimizer.zero_grad()
-
       log_probs_batch_tensor = torch.stack(probs_batch, dim=0).log()
       rewards_tensor = torch.tensor(rewards_batch)
 
@@ -137,7 +141,7 @@ def train(env, agent, total_timesteps):
 
       timesteps += len(log_probs_batch_tensor)
 
-      loss = -log_probs_batch_tensor @ rewards_tensor
+      loss = -(log_probs_batch_tensor @ rewards_tensor) / len(log_probs_batch_tensor)
       writer.add_scalar("Mean Rewards/train", np.mean(total_rewards), timesteps)
       writer.add_scalar("Loss/train", loss, timesteps)
 
