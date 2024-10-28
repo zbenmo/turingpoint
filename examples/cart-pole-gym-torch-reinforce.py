@@ -26,7 +26,7 @@ class StateToActionLogits(nn.Module):
     )
 
   def forward(self, obs: torch.Tensor) -> torch.Tensor:
-    """obs -> actions (log_probabilities)"""
+    """obs -> actions (logits)"""
 
     return self.net(obs)
 
@@ -137,7 +137,7 @@ def train(env, agent, total_timesteps):
 
       if normilize_the_rewards:
         rewards_tensor -= rewards_tensor.mean()
-        rewards_tensor /= rewards_tensor.std()
+        rewards_tensor /= (rewards_tensor.std() + 1e-5)
 
       timesteps += len(log_probs_batch_tensor)
 
