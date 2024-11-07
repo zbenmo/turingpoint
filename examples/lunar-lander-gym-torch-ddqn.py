@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.optim.lr_scheduler import ExponentialLR
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
@@ -20,10 +21,12 @@ import turingpoint as tp
 class StateToQValues(nn.Module):
 	def __init__(self, in_features, out_features, *args, **kwargs):
 		super().__init__(*args, **kwargs)
-		hidden_features = 10
+		hidden_features = 64
 		self.net = nn.Sequential(
 			nn.Linear(in_features=in_features, out_features=hidden_features),
-			nn.ReLU(),
+			nn.Tanh(), # ReLU(),
+			# nn.Linear(in_features=hidden_features, out_features=hidden_features),
+			# nn.Tanh(), # ReLU(),
 			nn.Linear(in_features=hidden_features, out_features=out_features),
 		)
 		self.out_features = out_features # keep for the range of actions
@@ -105,35 +108,36 @@ def collect_episodes(env, agent, num_episodes=40) -> List[Dict]:
 
 
 def train(env, agent, target_critic, total_timesteps):
-	discount = 0.9
+	discount = 0.99
 
-	optimizer = torch.optim.Adam(agent.parameters(), lr=0.0001)
+	optimizer = torch.optim.Adam(agent.parameters(), lr=1e-2)
+	scheduler = ExponentialLR(optimizer, gamma=0.9)
 
 	writer = SummaryWriter(
-		f"runs/ddqn_{discount=}_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}"
+		f"runs/ddqn_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}_{discount=}"
 	) # TensorBoard
 
 	replay_buffer = None
 
-	K = 5
+	K = 4
 
 	timesteps = 0
 	updates = 0
 	with tqdm(total=total_timesteps, desc="training steps") as pbar:
 		while timesteps < total_timesteps:
 
-			episodes, mean_reward = collect_episodes(env, agent)
+			episodes, mean_reward = collect_episodes(env, agent, num_episodes=3)
 			writer.add_scalar("Mean Rewards/train", mean_reward, timesteps)
 
 			new_entries = pd.DataFrame.from_records(episodes)
 			replay_buffer = (
 				pd.concat([replay_buffer, new_entries]) # it is okay to have None. None is dropped silentely..
-				.tail(100_000) # keep latest, drop oldest
+				.tail(10_000) # keep latest, drop oldest
 			)
 
 			for _ in range(K):
 
-				batch = replay_buffer.sample(32, replace=False) # random_state? to use from the iter round?
+				batch = replay_buffer.sample(min(128, len(replay_buffer)), replace=False) # random_state? to use from the iter round?
 
 				# Now learn from the batch
 
@@ -142,13 +146,17 @@ def train(env, agent, target_critic, total_timesteps):
 				reward = torch.tensor(batch['reward'].values, dtype=torch.float32)
 				next_obs = torch.tensor(np.array(batch['next_obs'].to_list()))
 				terminated = torch.tensor(batch['terminated'].to_list())
-				truncated = torch.tensor(batch['truncated'].to_list())
+				# truncated = torch.tensor(batch['truncated'].to_list())
 
 				with torch.no_grad():
-					next_obs_q_values = target_critic(next_obs)
-					next_obs_q_value, _ = next_obs_q_values.max(dim=1)
-					done = terminated | truncated
-					target = reward + torch.where(done, 0, discount * next_obs_q_value)
+					next_obs_q_values = agent(next_obs)
+					_, next_obs_q_value_idx = next_obs_q_values.max(dim=1)
+					next_obs_q_value = torch.gather(
+						target_critic(obs),
+						dim=1,
+						index=next_obs_q_value_idx.view(-1, 1)
+					).squeeze()
+					target = reward + torch.where(terminated, 0, discount * next_obs_q_value)
 
 				q_value = torch.gather(agent(obs), dim=1, index=action.view(-1, 1)).squeeze()
 
@@ -165,10 +173,12 @@ def train(env, agent, target_critic, total_timesteps):
 				optimizer.step()
 
 				updates += 1
-				if updates % 100 == 0:
+				if updates % 1000 == 0:
 					update_target_critic_from_agent(target_critic, agent)
 
 				pbar.update(len(batch))
+
+			scheduler.step()
 
 	writer.flush()
 
@@ -200,7 +210,7 @@ def main():
 	print("before training")
 	print(f'{mean_reward_before_train=}')
 
-	train(env, agent, target_critic, total_timesteps=300_000) # 1_000_000)
+	train(env, agent, target_critic, total_timesteps=1_000_000)
 
 	mean_reward_after_train = evaluate(env, agent, 100)
 	print("after training")

@@ -118,7 +118,7 @@ def train(env, agent, critic, total_timesteps):
 	critic_optimizer = torch.optim.Adam(critic.parameters(), lr=0.0001)
 
 	writer = SummaryWriter(
-		f"runs/actor_critic_{causality_to_be_accounted_for=}_{normilize_the_rewards=}_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}"
+		f"runs/actor_critic_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}_{causality_to_be_accounted_for=}_{normilize_the_rewards=}"
 	) # TensorBoard
 
 	timesteps = 0
