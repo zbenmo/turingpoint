@@ -76,7 +76,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
 	return total_reward / num_episodes
 
 
-def collect_episodes(env, agent, num_episodes=40) -> List[Dict]:
+def collect_episodes(env, agent, num_episodes=40, epsilon=0.1) -> List[Dict]:
 
 	collector = tp_utils.Collector(['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'])
 
@@ -86,7 +86,7 @@ def collect_episodes(env, agent, num_episodes=40) -> List[Dict]:
 	def get_episode_participants():
 		yield functools.partial(tp_gym_utils.call_reset, env=env)
 		yield from itertools.cycle([
-				functools.partial(get_action, agent=agent, epsilon=0.1),
+				functools.partial(get_action, agent=agent, epsilon=epsilon),
 				functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
 				collector,
 				tp_gym_utils.check_done,
@@ -121,12 +121,20 @@ def train(env, agent, target_critic, total_timesteps):
 
 	K = 4
 
+	max_epsilon = 0.15
+	min_epsion = 0.05
+
 	timesteps = 0
 	updates = 0
 	with tqdm(total=total_timesteps, desc="training steps") as pbar:
 		while timesteps < total_timesteps:
 
-			episodes, mean_reward = collect_episodes(env, agent, num_episodes=3)
+			epsilon = (
+				min_epsion
+				+ (max_epsilon - min_epsion) * ((total_timesteps - timesteps) / total_timesteps)
+			)
+
+			episodes, mean_reward = collect_episodes(env, agent, num_episodes=3, epsilon=epsilon)
 			writer.add_scalar("Mean Rewards/train", mean_reward, timesteps)
 
 			new_entries = pd.DataFrame.from_records(episodes)
