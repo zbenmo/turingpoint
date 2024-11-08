@@ -22,11 +22,11 @@ import turingpoint as tp
 
 
 class StateToQValues(nn.Module):
+    """Copied mostly from Berkeley CS 285/homework_fall2023
+    """
     def __init__(self, out_features, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # hidden_features = 64
         self.net = nn.Sequential(
-            # PreprocessAtari(),
             nn.Conv2d(in_channels=4, out_channels=32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2),
@@ -42,6 +42,8 @@ class StateToQValues(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         """obs -> q-values (regression)"""
+        assert obs.ndim == 4, f'{obs.shape=}'
+        # nn.Flatten() from above skips first dim, so if no batch, we fail to flatten all needed.
 
         return self.net(obs)
 
@@ -128,7 +130,7 @@ def train(env, agent, target_critic, total_timesteps):
 
     replay_buffer = None
 
-    K = 4
+    K = 2
 
     max_epsilon = 0.15
     min_epsion = 0.05
