@@ -199,7 +199,7 @@ def train(env, agent, target_critic, total_timesteps):
 
                 updates += 1
                 pbar_updates.update(1)
-                if updates % 10 == 0:
+                if updates % 1 == 0:
                     update_target_critic_from_agent(target_critic, agent)
                     writer.add_scalar("update_target_critic_from_agent", 1, timesteps)
                 pbar.update(len(batch))
@@ -210,7 +210,13 @@ def train(env, agent, target_critic, total_timesteps):
 
 
 def update_target_critic_from_agent(target_critic, agent):
-     target_critic.load_state_dict(agent.state_dict())
+     target_critic_sd = target_critic.state_dict()
+     agent_sd = agent.state_dict()
+     take_old = 0.9
+     take_new = 0.1
+     for key in target_critic_sd:
+        target_critic_sd[key] = take_old * target_critic_sd[key] + take_new * agent_sd[key]
+     target_critic.load_state_dict(target_critic_sd)
 
 
 def main():
