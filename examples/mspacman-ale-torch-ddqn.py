@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import ExponentialLR
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from torch.utils.tensorboard import SummaryWriter
 
 import turingpoint.gymnasium_utils as tp_gym_utils
@@ -78,7 +78,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
     evaluate_assembly = tp.Assembly(get_participants)
 
-    for _ in range(num_episodes):
+    for _ in trange(num_episodes, desc="evaluate"):
         _ = evaluate_assembly.launch()
         # Note that we don't clear the rewards in 'rewards_collector', and so we continue to collect.
 
@@ -108,21 +108,23 @@ def collect_episodes(env, agent, num_episodes=40, epsilon=0.1) -> List[Dict]:
 
     steps = [] # it will be a list of dictionaries
     rewards = []
+    episodes_lens = []
     for _ in range(num_episodes):
         _ = episodes_assembly.launch()
         episode = list(collector.get_entries())
         episode_reward = sum(x['reward'] for x in episode) # TODO: discount factor?
         rewards.append(episode_reward)
+        episodes_lens.append(len(episode))
         collector.clear_entries()
         steps.extend(episode)
-    return steps, np.mean(rewards)
+    return steps, np.mean(rewards), np.mean(episodes_lens)
 
 
 def train(env, agent, target_critic, total_timesteps):
     discount = 0.99
 
-    optimizer = torch.optim.Adam(agent.parameters(), lr=1e-2)
-    scheduler = ExponentialLR(optimizer, gamma=0.9)
+    optimizer = torch.optim.Adam(agent.parameters(), lr=1e-3)
+    scheduler = ExponentialLR(optimizer, gamma=0.99)
 
     writer = SummaryWriter(
         f"runs/MsPacman_ddqn_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}_{discount=}"
@@ -137,7 +139,10 @@ def train(env, agent, target_critic, total_timesteps):
 
     timesteps = 0
     updates = 0
-    with tqdm(total=total_timesteps, desc="training steps") as pbar:
+    with (
+        tqdm(total=total_timesteps, desc="training steps") as pbar,
+        tqdm(desc="updates") as pbar_updates
+        ):
         while timesteps < total_timesteps:
 
             epsilon = (
@@ -145,8 +150,9 @@ def train(env, agent, target_critic, total_timesteps):
                 + (max_epsilon - min_epsion) * ((total_timesteps - timesteps) / total_timesteps)
             )
 
-            episodes, mean_reward = collect_episodes(env, agent, num_episodes=3, epsilon=epsilon)
+            episodes, mean_reward, mean_episodes_lens = collect_episodes(env, agent, num_episodes=3, epsilon=epsilon)
             writer.add_scalar("Mean Rewards/train", mean_reward, timesteps)
+            writer.add_scalar("Mean Episodes Lens/train", mean_episodes_lens, timesteps)
 
             new_entries = pd.DataFrame.from_records(episodes)
             replay_buffer = (
@@ -171,7 +177,7 @@ def train(env, agent, target_critic, total_timesteps):
                     next_obs_q_values = agent(next_obs)
                     _, next_obs_q_value_idx = next_obs_q_values.max(dim=1)
                     next_obs_q_value = torch.gather(
-                        target_critic(obs),
+                        target_critic(next_obs),
                         dim=1,
                         index=next_obs_q_value_idx.view(-1, 1)
                     ).squeeze()
@@ -192,9 +198,10 @@ def train(env, agent, target_critic, total_timesteps):
                 optimizer.step()
 
                 updates += 1
-                if updates % 1000 == 0:
+                pbar_updates.update(1)
+                if updates % 10 == 0:
                     update_target_critic_from_agent(target_critic, agent)
-
+                    writer.add_scalar("update_target_critic_from_agent", 1, timesteps)
                 pbar.update(len(batch))
 
             scheduler.step()
@@ -218,7 +225,7 @@ def main():
     env = AtariPreprocessing(
         env,
         noop_max=30,
-        frame_skip=3,
+        frame_skip=3, # 3 + 1 = 4 ?
         screen_size=84,
         terminal_on_life_loss=False,
         grayscale_obs=True,
@@ -241,7 +248,7 @@ def main():
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(env, agent, target_critic, total_timesteps=3_000) # 1_000_000)
+    train(env, agent, target_critic, total_timesteps=30_000) # 1_000_000)
 
     mean_reward_after_train = evaluate(env, agent, 100)
     print("after training")
