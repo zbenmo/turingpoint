@@ -199,7 +199,7 @@ def train(env, agent, target_critic, total_timesteps):
 
                 updates += 1
                 pbar_updates.update(1)
-                if updates % 1 == 0:
+                if updates % 2 == 0:
                     update_target_critic_from_agent(target_critic, agent)
                     writer.add_scalar("update_target_critic_from_agent", 1, timesteps)
                 pbar.update(len(batch))

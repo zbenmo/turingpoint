@@ -160,7 +160,7 @@ def train(env, agent, target_critic, total_timesteps):
 					next_obs_q_values = agent(next_obs)
 					_, next_obs_q_value_idx = next_obs_q_values.max(dim=1)
 					next_obs_q_value = torch.gather(
-						target_critic(obs),
+						target_critic(next_obs),
 						dim=1,
 						index=next_obs_q_value_idx.view(-1, 1)
 					).squeeze()
