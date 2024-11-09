@@ -1,3 +1,4 @@
+from pprint import pprint
 from typing import Callable, Iterable, Iterator, Union
 from .definitions import Participant, Done
 
@@ -42,4 +43,8 @@ class Assembly:
         participant(parcel)
     except Done:
       pass
+    except:
+      print(participant)
+      pprint(parcel)
+      raise
     return parcel

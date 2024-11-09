@@ -2,11 +2,11 @@ from turingpoint import Done
 import gymnasium as gym
 
 
-def call_reset(parcel, *, env: gym.Env, **kwargs) -> dict:
+def call_reset(parcel, *, env: gym.Env, **kwargs):
   parcel.update(zip(['obs', 'info'], env.reset(**kwargs)))
 
 
-def call_step(parcel, *, env: gym.Env, save_obs_as="obs") -> dict:
+def call_step(parcel, *, env: gym.Env, save_obs_as="obs"):
   action = parcel['action']
   parcel.update(zip(
     [save_obs_as, 'reward', 'terminated', 'truncated', 'info'],
@@ -19,5 +19,5 @@ def check_done(parcel: dict):
     raise Done
 
 
-def call_render(parcel, *, env: gym.Env, **kwargs) -> dict:
+def call_render(parcel, *, env: gym.Env, **kwargs):
   env.render(**kwargs)
