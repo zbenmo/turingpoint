@@ -1,7 +1,9 @@
 from pprint import pprint
 from typing import Any, Generator, List, Sequence
 
-from turingpoint.definitions import Participant
+from tqdm import tqdm
+
+from turingpoint.definitions import Participant, Done
 
 
 def print_parcel(parcel: dict) -> None:
@@ -49,3 +51,25 @@ def discounted_reward_to_go(rewards: Sequence[float], gamma=1.0) -> Sequence[flo
         discounted_return = discounted_return * gamma + reward
         ret.insert(0, discounted_return)
     return ret
+
+
+class StepsTracker:
+    def __init__(self, total_timesteps, desc):
+        self.total_timesteps = total_timesteps
+        self.desc = desc
+        self.pbar = None
+
+    def __enter__(self):
+        self.pbar = tqdm(total=self.total_timesteps, desc=self.desc)
+        return self
+
+    def __call__(self, parcel):
+        step = parcel.get('step', None)
+        step = 0 if step is None else step + 1
+        parcel['step'] = step
+        if step >= self.total_timesteps:
+            raise Done
+        self.pbar.update(1)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.pbar.close()
