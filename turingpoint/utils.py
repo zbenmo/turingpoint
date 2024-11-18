@@ -1,6 +1,5 @@
 from pprint import pprint
-from typing import Any, Generator, List, Sequence
-
+from typing import Generator, List, Sequence
 from tqdm import tqdm
 
 from turingpoint.definitions import Participant, Done
@@ -54,6 +53,8 @@ def discounted_reward_to_go(rewards: Sequence[float], gamma=1.0) -> Sequence[flo
 
 
 class StepsTracker:
+    """Participant that shall maintain 'step' in the parcel.
+    Use it as a context manager as there is also a progress bar associated with it, which should be closed."""
     def __init__(self, total_timesteps, desc):
         self.total_timesteps = total_timesteps
         self.desc = desc
@@ -73,3 +74,19 @@ class StepsTracker:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.pbar.close()
+
+
+class ReplayBufferCollector:
+    """This is a collector based on a list. It is a participant that just copies entries.
+    It is meant to be used as a replay buffer with a simple logic that keeps the newest entries.
+    """
+    def __init__(self, collect, max_entries=10_000):
+        self.collect = list(collect)
+        self.max_entries = max_entries
+        self.replay_buffer = []
+
+    def __call__(self, parcel: dict):
+        self.replay_buffer.append({
+            k: parcel[k] for k in self.collect
+        })
+        del self.replay_buffer[0:-self.max_entries]

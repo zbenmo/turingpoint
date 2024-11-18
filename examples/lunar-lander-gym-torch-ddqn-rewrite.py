@@ -2,7 +2,8 @@ import datetime
 import functools
 import itertools
 import random
-from typing import Dict, List
+import time
+from typing import Dict
 import numpy as np
 import gymnasium as gym
 import torch
@@ -14,7 +15,6 @@ from tqdm import trange
 import turingpoint.gymnasium_utils as tp_gym_utils
 import turingpoint.utils as tp_utils
 import turingpoint.tensorboard_utils as tp_tb_utils
-import turingpoint.pandas_utils as tp_pd_utils
 import turingpoint as tp
 
 
@@ -86,7 +86,7 @@ def train(env, agent, target_critic, total_timesteps):
     K = 4
     batch_size = 128
 
-    replay_buffer_collector = tp_pd_utils.ReplayBufferCollector(
+    replay_buffer_collector = tp_utils.ReplayBufferCollector(
         collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'])
 
     optimizer = torch.optim.Adam(agent.parameters(), lr=1e-2)
@@ -111,22 +111,27 @@ def train(env, agent, target_critic, total_timesteps):
 
         replay_buffer = replay_buffer_collector.replay_buffer
 
-        parcel['Mean Rewards/train'] = replay_buffer['reward'].mean() # taking from the replay_buffer ? TODO: !!!
+        rewards = (x['reward'] for x in replay_buffer)
+        parcel['Mean Rewards/train'] = sum(rewards) / len(replay_buffer) # taking from the replay_buffer ? TODO: !!!
 
         losses = []
 
-        for _ in range(K):
+        replay_buffer_dataloader = torch.utils.data.DataLoader(
+            replay_buffer, batch_size=batch_size, shuffle=True)
 
-            batch = replay_buffer.sample(min(batch_size, len(replay_buffer)), replace=False) # random_state? to use from the iter round?
+        for _, batch in zip(range(K), replay_buffer_dataloader):
+
+            if len(batch['obs']) < 2:
+                continue
 
             # Now learn from the batch
 
-            obs = torch.tensor(np.array(batch['obs'].tolist()), dtype=torch.float32)
-            action = torch.tensor(batch['action'].to_list())
-            reward = torch.tensor(batch['reward'].values, dtype=torch.float32)
-            next_obs = torch.tensor(np.array(batch['next_obs'].to_list()), dtype=torch.float32)
-            terminated = torch.tensor(batch['terminated'].to_list())
-            # truncated = torch.tensor(batch['truncated'].to_list())
+            obs = batch['obs'].to(torch.float32)
+            action = batch['action']
+            reward = batch['reward'].to(torch.float32)
+            next_obs = batch['next_obs'].to(torch.float32)
+            terminated = batch['terminated']
+            # truncated = batch['truncated']
 
             with torch.no_grad():
                 next_obs_q_values = agent(next_obs)
@@ -220,7 +225,10 @@ def main():
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(env, agent, target_critic, total_timesteps=1_000_000)
+    start = time.time()
+    train(env, agent, target_critic, total_timesteps=30_000) # 1_000_000)
+    end = time.time()
+    print(f'time={end - start}')
 
     mean_reward_after_train = evaluate(env, agent, 100)
     print("after training")
