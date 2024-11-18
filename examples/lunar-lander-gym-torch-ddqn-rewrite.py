@@ -2,7 +2,6 @@ import datetime
 import functools
 import itertools
 import random
-import time
 from typing import Dict
 import numpy as np
 import gymnasium as gym
@@ -225,10 +224,7 @@ def main():
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    start = time.time()
-    train(env, agent, target_critic, total_timesteps=30_000) # 1_000_000)
-    end = time.time()
-    print(f'time={end - start}')
+    train(env, agent, target_critic, total_timesteps=1_000_000)
 
     mean_reward_after_train = evaluate(env, agent, 100)
     print("after training")
