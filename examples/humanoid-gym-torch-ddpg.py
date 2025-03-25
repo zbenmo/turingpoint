@@ -1,0 +1,288 @@
+import datetime
+import functools
+import itertools
+import random
+from typing import Dict
+import numpy as np
+import gymnasium as gym
+import torch
+from torch import nn
+from torch.nn import functional as F
+from torch.optim.lr_scheduler import ExponentialLR
+from tqdm import trange
+
+import turingpoint.gymnasium_utils as tp_gym_utils
+import turingpoint.utils as tp_utils
+import turingpoint.tensorboard_utils as tp_tb_utils
+import turingpoint.torch_utils as tp_torch_utils
+import turingpoint as tp
+
+
+class StateToAction(nn.Module):
+    def __init__(self, in_features, out_actions, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        hidden_features = 64
+        self.net = nn.Sequential(
+            nn.Linear(in_features=in_features, out_features=hidden_features),
+            nn.Tanh(), # ReLU(),
+            # nn.Linear(in_features=hidden_features, out_features=hidden_features),
+            # nn.Tanh(), # ReLU(),
+            nn.Linear(in_features=hidden_features, out_features=out_actions),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs -> action (regression)"""
+
+        return self.net(obs)
+
+
+class StateActionToQValue(nn.Module):
+    def __init__(self, in_features, in_actions, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        hidden_features = 64
+        self.net = nn.Sequential(
+            nn.Linear(in_features=(in_features + in_actions), out_features=hidden_features),
+            nn.Tanh(), # ReLU(),
+            # nn.Linear(in_features=hidden_features, out_features=hidden_features),
+            # nn.Tanh(), # ReLU(),
+            nn.Linear(in_features=hidden_features, out_features=1),
+        )
+
+    def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """obs, action -> q-values (regression)"""
+
+        return self.net(torch.concat((obs, actions), dim=1)).squeeze()
+
+
+def get_action(parcel: Dict, *, agent: StateToAction, explore=False):
+    """'participant' representing the agent. Epsion greedy strategy:
+    1 - epsion - take the "best action" - explotation
+    epsilon - take a random action - exploration (can still by chance take the "best action")
+    """
+
+    # if explore and np.random.binomial(1, parcel['epsilon']) > 0:
+    #     parcel['action'] = np.random.choice(range(agent.out_features))
+    # else:
+    #     obs = parcel['obs']
+    #     q_values = agent(torch.tensor(obs))
+    #     _, action = q_values.max(dim=0) # or just argmax..
+    #     parcel['action'] = action.item()
+    obs = parcel['obs']
+    # print(f'{obs.shape=}')
+    action = agent(torch.tensor(obs, dtype=torch.float32))
+    parcel['action'] = action.detach().numpy() # .item()
+
+
+def evaluate(env, agent, num_episodes: int) -> float:
+    """Collect episodes and calculate the mean total reward."""
+
+    agent.eval()
+
+    rewards_collector = tp_utils.Collector(['reward'])
+
+    def get_participants():
+        yield functools.partial(tp_gym_utils.call_reset, env=env)
+        yield from itertools.cycle([
+                functools.partial(get_action, agent=agent),
+                functools.partial(tp_gym_utils.call_step, env=env),
+                rewards_collector,
+                tp_gym_utils.check_done
+        ])
+
+    evaluate_assembly = tp.Assembly(get_participants)
+
+    for _ in trange(num_episodes, desc="evaluate"):
+        _ = evaluate_assembly.launch()
+        # Note that we don't clear the rewards in 'rewards_collector', and so we continue to collect.
+
+    total_reward = sum(x['reward'] for x in rewards_collector.get_entries())
+
+    return total_reward / num_episodes
+
+
+def train(env, agent, critic, target_agent, target_critic, total_timesteps):
+    """Given a model (agent) and a critic
+    (which should be of the same sort and which values are overridden in the begining).
+    Train the model"""
+
+    agent.train()
+    critic.train()
+
+    target_agent.eval()
+    target_critic.eval()
+
+    discount = 0.99
+    K = 4
+    batch_size = 128
+
+    replay_buffer_collector = tp_utils.ReplayBufferCollector(
+        collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'])
+
+    optimizer = torch.optim.Adam(agent.parameters(), lr=1e-4)
+    # scheduler = ExponentialLR(optimizer, gamma=0.99)
+
+    # max_epsilon = 0.15
+    # min_epsilon = 0.05
+
+    def update_target(target_agent, target_critic, agent, critic):
+        tau = 0.05 # if needed, can use two different values
+        tp_torch_utils.polyak_update(agent.parameters(), target_agent.parameters(), tau) # agent -> target_agent
+        tp_torch_utils.polyak_update(critic.parameters(), target_critic.parameters(), tau) # critic -> target_critic
+
+    def learn(parcel: dict):
+
+        if parcel['step'] == 0:
+            parcel['lr'] = optimizer.param_groups[0]['lr']
+
+        if parcel['step'] % 1000 == 0:
+            update_target(target_agent, target_critic, agent, critic)
+
+        if parcel['step'] < 200: # we'll start really learning only after we collect some steps
+            return
+
+        replay_buffer = replay_buffer_collector.replay_buffer
+
+        rewards = (x['reward'] for x in replay_buffer)
+        parcel['Mean Rewards/train'] = sum(rewards) / len(replay_buffer) # taking from the replay_buffer ? TODO: !!!
+
+        losses_agent = []
+        losses_critic = []
+
+        replay_buffer_dataloader = torch.utils.data.DataLoader(
+            replay_buffer, batch_size=batch_size, shuffle=True)
+
+        for _, batch in zip(range(K), replay_buffer_dataloader):
+
+            if len(batch['obs']) < 2:
+                continue
+
+            # Now learn from the batch
+
+            obs = batch['obs'].to(torch.float32)
+            action = batch['action']
+            reward = batch['reward'].to(torch.float32)
+            next_obs = batch['next_obs'].to(torch.float32)
+            terminated = batch['terminated']
+            # truncated = batch['truncated']
+
+            with torch.no_grad():
+                next_actions = target_agent(next_obs)
+                next_obs_q_values = target_critic(next_obs, next_actions)
+
+                # _, next_obs_q_value_idx = next_obs_q_values.max(dim=1)
+                # next_obs_q_value = torch.gather(
+                #     target_critic(next_obs),
+                #     dim=1,
+                #     index=next_obs_q_value_idx.view(-1, 1)
+                # ).squeeze()
+                target = reward + torch.where(terminated, 0, discount * next_obs_q_values)
+
+            optimizer.zero_grad()
+
+            q_value = critic(obs, action)
+
+            loss = F.mse_loss(q_value, target)
+
+            loss.backward()
+
+            losses_critic.append(loss.item())
+
+            optimizer.step()
+
+            optimizer.zero_grad() # same optimizer? TODO:
+
+            loss = -critic(obs, agent(obs)).mean() # let's maximize this value (hence the minus sign)
+
+            loss.backward()
+
+            optimizer.step()
+
+            losses_agent.append(loss.item())
+
+            # if parcel['step'] % 5000 == 0:
+            #     scheduler.step()
+            #     parcel['lr'] = optimizer.param_groups[0]['lr'] # scheduler.get_last_lr()
+
+        parcel['Loss(agent)/train'] = np.mean(losses_agent)
+        parcel['Loss(critic)/train'] = np.mean(losses_critic)
+
+    # def set_epsilon(parcel: dict):
+    #     parcel['epsilon'] = (
+    #         min_epsilon
+    #         + (max_epsilon - min_epsilon) * ((total_timesteps - parcel['step']) / total_timesteps)
+    #     )
+
+    def advance(parcel: dict):
+        parcel['obs'] = parcel.pop('next_obs')
+
+    def reset_if_needed(parcel: dict):
+        terminated = parcel.pop('terminated', False)
+        truncated = parcel.pop('truncated', False) 
+        if terminated or truncated:
+            tp_gym_utils.call_reset(parcel, env=env)
+
+    def get_train_participants():
+        with (tp_tb_utils.Logging(
+            path=f"runs/Humanoid_ddpg_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}_{discount=}",
+            track=[
+                'Mean Rewards/train',
+                'Loss(agent)/train',
+                'Loss(critic)/train',
+            ]) as logging,
+            tp_utils.StepsTracker(total_timesteps=total_timesteps, desc="training steps") as steps_tracker):
+
+            yield functools.partial(tp_gym_utils.call_reset, env=env)
+            yield steps_tracker # initialization to 0
+            yield from itertools.cycle([
+                # set_epsilon,
+                functools.partial(get_action, agent=agent, explore=True),
+                functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
+                replay_buffer_collector,
+                learn,
+                logging,
+                steps_tracker, # can raise Done
+                advance,
+                reset_if_needed
+            ])
+
+    train_assembly = tp.Assembly(get_train_participants)
+    
+    train_assembly.launch()
+
+
+def main():
+
+    random.seed(1)
+    np.random.seed(1)
+    torch.manual_seed(1)
+
+    env = gym.make('Humanoid-v4') # gym.make('Humanoid-v5')
+
+    env.reset(seed=1)
+
+    # state and obs/observations are used in this example interchangably.
+
+    state_space = env.observation_space.shape[0]
+    action_space = env.action_space.shape[-1]
+
+    # print(f'{state_space=}')
+    # print(f'{action_space=}')
+
+    act = StateToAction(state_space, out_actions=action_space) # This is the agent
+    critic = StateActionToQValue(state_space, action_space)
+    target_act = StateToAction(state_space, out_actions=action_space)
+    target_critic = StateActionToQValue(state_space, action_space)
+
+    mean_reward_before_train = evaluate(env, act, 100)
+    print("before training")
+    print(f'{mean_reward_before_train=}')
+
+    train(env, act, critic, target_act, target_critic, total_timesteps=1_000_000)
+
+    mean_reward_after_train = evaluate(env, act, 100)
+    print("after training")
+    print(f'{mean_reward_after_train=}')
+
+
+if __name__ == "__main__":
+    main()
