@@ -100,10 +100,17 @@ def evaluate(env, agent, num_episodes: int) -> float:
     return total_reward / num_episodes
 
 
-def train(env, agent, critic, target_agent, target_critic, total_timesteps):
+def train(env, agent: StateToAction, critic: StateActionToQValue, total_timesteps):
     """Given a model (agent) and a critic
     (which should be of the same sort and which values are overridden in the begining).
     Train the model"""
+
+    state_space = env.observation_space.shape[0] # alternatively take it from agent/target...
+    action_space = env.action_space.shape[-1]
+    target_agent = StateToAction(state_space, out_actions=action_space)
+    target_critic = StateActionToQValue(state_space, action_space)
+    target_agent.load_state_dict(agent.state_dict()) # initialize the policy and the target with the same (random) values
+    target_critic.load_state_dict(critic.state_dict()) # same here
 
     agent.train()
     critic.train()
@@ -112,13 +119,14 @@ def train(env, agent, critic, target_agent, target_critic, total_timesteps):
     target_critic.eval()
 
     discount = 0.99
-    K = 4
+    K = 1
     batch_size = 128
 
     replay_buffer_collector = tp_utils.ReplayBufferCollector(
         collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'])
 
-    optimizer = torch.optim.Adam(agent.parameters(), lr=1e-4)
+    optimizer_agent = torch.optim.Adam(agent.parameters(), lr=1e-5)
+    optimizer_critic = torch.optim.Adam(critic.parameters(), lr=1e-5)
     # scheduler = ExponentialLR(optimizer, gamma=0.99)
 
     # max_epsilon = 0.15
@@ -132,9 +140,9 @@ def train(env, agent, critic, target_agent, target_critic, total_timesteps):
     def learn(parcel: dict):
 
         if parcel['step'] == 0:
-            parcel['lr'] = optimizer.param_groups[0]['lr']
+            parcel['lr'] = optimizer_agent.param_groups[0]['lr']
 
-        if parcel['step'] % 1000 == 0:
+        if parcel['step'] % 1 == 0:
             update_target(target_agent, target_critic, agent, critic)
 
         if parcel['step'] < 200: # we'll start really learning only after we collect some steps
@@ -177,7 +185,7 @@ def train(env, agent, critic, target_agent, target_critic, total_timesteps):
                 # ).squeeze()
                 target = reward + torch.where(terminated, 0, discount * next_obs_q_values)
 
-            optimizer.zero_grad()
+            optimizer_critic.zero_grad()
 
             q_value = critic(obs, action)
 
@@ -187,15 +195,15 @@ def train(env, agent, critic, target_agent, target_critic, total_timesteps):
 
             losses_critic.append(loss.item())
 
-            optimizer.step()
+            optimizer_critic.step()
 
-            optimizer.zero_grad() # same optimizer? TODO:
+            optimizer_agent.zero_grad()
 
             loss = -critic(obs, agent(obs)).mean() # let's maximize this value (hence the minus sign)
 
             loss.backward()
 
-            optimizer.step()
+            optimizer_agent.step()
 
             losses_agent.append(loss.item())
 
@@ -204,7 +212,13 @@ def train(env, agent, critic, target_agent, target_critic, total_timesteps):
             #     parcel['lr'] = optimizer.param_groups[0]['lr'] # scheduler.get_last_lr()
 
         parcel['Loss(agent)/train'] = np.mean(losses_agent)
+        losses_agent_std = np.std(losses_agent)
+        parcel['Loss(agent)+std/train'] = parcel['Loss(agent)/train'] + losses_agent_std
+        parcel['Loss(agent)-std/train'] = parcel['Loss(agent)/train'] - losses_agent_std
         parcel['Loss(critic)/train'] = np.mean(losses_critic)
+        losses_critic_std = np.std(losses_critic)
+        parcel['Loss(critic)+std/train'] = parcel['Loss(critic)/train'] + losses_critic_std
+        parcel['Loss(critic)-std/train'] = parcel['Loss(critic)/train'] - losses_critic_std
 
     # def set_epsilon(parcel: dict):
     #     parcel['epsilon'] = (
@@ -223,11 +237,16 @@ def train(env, agent, critic, target_agent, target_critic, total_timesteps):
 
     def get_train_participants():
         with (tp_tb_utils.Logging(
-            path=f"runs/Humanoid_ddpg_{datetime.datetime.now().strftime('%I_%M%p_on_%B_%d_%Y')}_{discount=}",
+            path=f"runs/Humanoid_ddpg_{datetime.datetime.now().strftime('%H_%M%p_on_%B_%d_%Y')}_{discount=}",
             track=[
                 'Mean Rewards/train',
                 'Loss(agent)/train',
                 'Loss(critic)/train',
+                'lr',
+                'Loss(agent)+std/train',
+                'Loss(agent)-std/train',
+                'Loss(critic)+std/train',
+                'Loss(critic)-std/train',
             ]) as logging,
             tp_utils.StepsTracker(total_timesteps=total_timesteps, desc="training steps") as steps_tracker):
 
@@ -256,7 +275,7 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    env = gym.make('Humanoid-v4') # gym.make('Humanoid-v5')
+    env = gym.make('Humanoid-v4') # "Pendulum-v1") #  # gym.make('Humanoid-v5')
 
     env.reset(seed=1)
 
@@ -270,14 +289,12 @@ def main():
 
     act = StateToAction(state_space, out_actions=action_space) # This is the agent
     critic = StateActionToQValue(state_space, action_space)
-    target_act = StateToAction(state_space, out_actions=action_space)
-    target_critic = StateActionToQValue(state_space, action_space)
 
     mean_reward_before_train = evaluate(env, act, 100)
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(env, act, critic, target_act, target_critic, total_timesteps=1_000_000)
+    train(env, act, critic, total_timesteps=1_000_000)
 
     mean_reward_after_train = evaluate(env, act, 100)
     print("after training")
