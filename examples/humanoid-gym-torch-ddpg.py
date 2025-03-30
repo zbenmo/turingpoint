@@ -24,10 +24,14 @@ class StateToAction(nn.Module):
         super().__init__(*args, **kwargs)
         hidden_features = 64
         self.net = nn.Sequential(
+            nn.BatchNorm1d(in_features),
+            # nn.Dropout(p = 0.2),
             nn.Linear(in_features=in_features, out_features=hidden_features),
             nn.BatchNorm1d(hidden_features),
             nn.Tanh(), # ReLU(),
+            # nn.Dropout(p = 0.2),
             # nn.Linear(in_features=hidden_features, out_features=hidden_features),
+            # nn.BatchNorm1d(hidden_features),
             # nn.Tanh(), # ReLU(),
             nn.Linear(in_features=hidden_features, out_features=out_actions),
         )
@@ -43,10 +47,14 @@ class StateActionToQValue(nn.Module):
         super().__init__(*args, **kwargs)
         hidden_features = 64
         self.net = nn.Sequential(
+            nn.BatchNorm1d((in_features + in_actions)),
+            # nn.Dropout(p = 0.2),
             nn.Linear(in_features=(in_features + in_actions), out_features=hidden_features),
             nn.BatchNorm1d(hidden_features),
             nn.Tanh(), # ReLU(),
+            # nn.Dropout(p = 0.2),
             # nn.Linear(in_features=hidden_features, out_features=hidden_features),
+            # nn.BatchNorm1d(hidden_features),
             # nn.Tanh(), # ReLU(),
             nn.Linear(in_features=hidden_features, out_features=1),
         )
@@ -74,9 +82,11 @@ def get_action(parcel: Dict, *, agent: StateToAction, explore=False):
     # print(f'{obs.shape=}')
     assert not agent.training
     action = agent(torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
+    if explore:
+        action = torch.clip(action + torch.rand_like(action), -0.4, 0.4) # -2.0, 2.0) # for Pendulum-v1
     parcel['action'] = action.squeeze().detach().numpy() # .item()
     if len(parcel['action'].shape) == 0:
-        parcel['action'] = parcel['action'].reshape((1, ))
+        parcel['action'] = parcel['action'].reshape((1, )) # for Pendulum-v1
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -109,9 +119,11 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
 @contextmanager
 def start_train(agent: StateToAction):
-    agent.train()
-    yield agent
-    agent.eval()
+    try:
+        agent.train()
+        yield agent
+    finally:
+        agent.eval()
 
 
 def train(env, agent: StateToAction, critic: StateActionToQValue, total_timesteps):
@@ -141,7 +153,8 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
 
     optimizer_agent = torch.optim.Adam(agent.parameters(), lr=1e-5)
     optimizer_critic = torch.optim.Adam(critic.parameters(), lr=1e-5)
-    # scheduler = ExponentialLR(optimizer, gamma=0.99)
+    # scheduler_agent = ExponentialLR(optimizer_agent, gamma=0.99)
+    # scheduler_critic = ExponentialLR(optimizer_critic, gamma=0.99)
 
     # max_epsilon = 0.15
     # min_epsilon = 0.05
@@ -156,7 +169,8 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
         with start_train(agent), start_train(critic):
 
             if parcel['step'] == 0:
-                parcel['lr'] = optimizer_agent.param_groups[0]['lr']
+                parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr']
+                parcel['lr_critic'] = optimizer_critic.param_groups[0]['lr']
 
             if parcel['step'] % 1 == 0:
                 update_target(target_agent, target_critic, agent, critic)
@@ -192,13 +206,6 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
                 with torch.no_grad():
                     next_actions = target_agent(next_obs)
                     next_obs_q_values = target_critic(next_obs, next_actions).squeeze()
-
-                    # _, next_obs_q_value_idx = next_obs_q_values.max(dim=1)
-                    # next_obs_q_value = torch.gather(
-                    #     target_critic(next_obs),
-                    #     dim=1,
-                    #     index=next_obs_q_value_idx.view(-1, 1)
-                    # ).squeeze()
                     target = reward + torch.where(terminated, 0, discount * next_obs_q_values)
 
                 optimizer_critic.zero_grad()
@@ -224,8 +231,10 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
                 losses_agent.append(loss.item())
 
                 # if parcel['step'] % 5000 == 0:
-                #     scheduler.step()
-                #     parcel['lr'] = optimizer.param_groups[0]['lr'] # scheduler.get_last_lr()
+                #     scheduler_critic.step()
+                #     scheduler_agent.step()
+                #     parcel['lr_critic'] = optimizer_critic.param_groups[0]['lr'] # scheduler.get_last_lr()
+                #     parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr'] # scheduler.get_last_lr()
 
             parcel['Loss(agent)/train'] = np.mean(losses_agent)
             # losses_agent_std = np.std(losses_agent)
@@ -251,6 +260,9 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
         if terminated or truncated:
             tp_gym_utils.call_reset(parcel, env=env)
 
+    # def take_interesting_info(parcel: dict):
+    #     parcel.update(parcel.pop('info'))
+
     def get_train_participants():
         with (tp_tb_utils.Logging(
             path=f"runs/Humanoid_ddpg_{datetime.datetime.now().strftime('%H_%M%p_on_%B_%d_%Y')}_{discount=}",
@@ -258,7 +270,12 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
                 'Mean Rewards/train',
                 'Loss(agent)/train',
                 'Loss(critic)/train',
-                'lr',
+                'lr_critic',
+                'lr_agent',
+
+                # 'reward_survive',
+                # 'reward_forward',
+
                 # 'Loss(agent)+std/train',
                 # 'Loss(agent)-std/train',
                 # 'Loss(critic)+std/train',
@@ -269,12 +286,12 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
             yield functools.partial(tp_gym_utils.call_reset, env=env)
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
-                # check_train_mode,
                 # set_epsilon,
                 functools.partial(get_action, agent=agent, explore=True),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
                 replay_buffer_collector,
                 learn,
+                # take_interesting_info, # those will be also logged.
                 logging,
                 steps_tracker, # can raise Done
                 advance,
@@ -292,7 +309,7 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    env = gym.make("Pendulum-v1") # 'Humanoid-v4') #  # gym.make('Humanoid-v5')
+    env = gym.make('Humanoid-v5') #  "Pendulum-v1") #  # gym.make('Humanoid-v5')
 
     env.reset(seed=1)
 
@@ -311,7 +328,7 @@ def main():
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(env, act, critic, total_timesteps=1_000_000)
+    train(env, act, critic, total_timesteps=20_000)
 
     mean_reward_after_train = evaluate(env, act, 100)
     print("after training")

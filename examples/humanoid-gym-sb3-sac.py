@@ -57,7 +57,7 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    env = gym.make('Humanoid-v4') # gym.make('Humanoid-v5')
+    env = gym.make('Humanoid-v5')
  
     env.reset(seed=1)
 
@@ -87,7 +87,7 @@ def main():
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    model.learn(total_timesteps=100_000, log_interval=10, progress_bar=True)
+    model.learn(total_timesteps=20_000, log_interval=10, progress_bar=True)
     # model.save("ddpg_pendulum")
 
     # del model # remove to demonstrate saving and loading
