@@ -5,6 +5,7 @@ import random
 from typing import Dict
 import numpy as np
 import gymnasium as gym
+from gymnasium.utils.save_video import save_video
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -17,6 +18,9 @@ import turingpoint.utils as tp_utils
 import turingpoint.tensorboard_utils as tp_tb_utils
 import turingpoint.torch_utils as tp_torch_utils
 import turingpoint as tp
+
+
+gym_environment = 'Humanoid-v5' #  "Pendulum-v1"
 
 
 class StateToAction(nn.Module):
@@ -130,6 +134,8 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
     """Given a model (agent) and a critic
     (which should be of the same sort and which values are overridden in the begining).
     Train the model"""
+
+    rendering_env = gym.make(gym_environment, render_mode="rgb_array_list")
 
     state_space = env.observation_space.shape[0] # alternatively take it from agent/target...
     action_space = env.action_space.shape[-1]
@@ -263,6 +269,28 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
     # def take_interesting_info(parcel: dict):
     #     parcel.update(parcel.pop('info'))
 
+    def record_video(parcel: dict):
+        if parcel['step'] % 1000 != 0:
+            return
+
+        def get_one_episode_participants():
+            yield functools.partial(tp_gym_utils.call_reset, env=rendering_env)
+            yield from itertools.cycle([
+                functools.partial(get_action, agent=agent, explore=False),
+                functools.partial(tp_gym_utils.call_step, env=rendering_env),
+                tp_gym_utils.check_done,
+            ])
+
+        one_episode_assembly = tp.Assembly(get_one_episode_participants)
+        one_episode_assembly.launch()
+
+        save_video(
+            frames=rendering_env.render(),
+            video_folder="videos",
+            episode_index=parcel['step'],
+            fps=env.metadata["render_fps"],
+        )
+
     def get_train_participants():
         with (tp_tb_utils.Logging(
             path=f"runs/Humanoid_ddpg_{datetime.datetime.now().strftime('%H_%M%p_on_%B_%d_%Y')}_{discount=}",
@@ -293,6 +321,7 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
                 learn,
                 # take_interesting_info, # those will be also logged.
                 logging,
+                record_video,
                 steps_tracker, # can raise Done
                 advance,
                 reset_if_needed
@@ -309,8 +338,7 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    env = gym.make('Humanoid-v5') #  "Pendulum-v1") #  # gym.make('Humanoid-v5')
-
+    env = gym.make(gym_environment)
     env.reset(seed=1)
 
     # state and obs/observations are used in this example interchangably.
@@ -328,7 +356,7 @@ def main():
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(env, act, critic, total_timesteps=20_000)
+    train(env, act, critic, total_timesteps=100_000)
 
     mean_reward_after_train = evaluate(env, act, 100)
     print("after training")
