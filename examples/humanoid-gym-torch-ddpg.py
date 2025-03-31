@@ -160,7 +160,7 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
     # min_epsilon = 0.05
 
     def update_target(target_agent, target_critic, agent, critic):
-        tau = 0.05 # if needed, can use two different values
+        tau = 0.005 # if needed, can use two different values
         tp_torch_utils.polyak_update(agent.parameters(), target_agent.parameters(), tau) # agent -> target_agent
         tp_torch_utils.polyak_update(critic.parameters(), target_critic.parameters(), tau) # critic -> target_critic
 
