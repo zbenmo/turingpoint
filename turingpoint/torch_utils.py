@@ -48,3 +48,17 @@ def polyak_update(
         for param, target_param in zip_strict(params, target_params):
             target_param.data.mul_(1 - tau)
             torch.add(target_param.data, param.data, alpha=tau, out=target_param.data)
+
+
+# Taken as is from https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/utils.py
+def get_parameters_by_name(model: torch.nn.Module, included_names: Iterable[str]) -> list[torch.Tensor]:
+    """
+    Extract parameters from the state dict of ``model``
+    if the name contains one of the strings in ``included_names``.
+
+    :param model: the model where the parameters come from.
+    :param included_names: substrings of names to include.
+    :return: List of parameters values (Pytorch tensors)
+        that matches the queried names.
+    """
+    return [param for name, param in model.state_dict().items() if any([key in name for key in included_names])]

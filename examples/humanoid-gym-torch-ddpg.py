@@ -20,24 +20,26 @@ import turingpoint.torch_utils as tp_torch_utils
 import turingpoint as tp
 
 
-gym_environment = 'Humanoid-v5' #  "Pendulum-v1"
+gym_environment = "Pendulum-v1" # 'Humanoid-v5' #  
+use_batch_normilization = False
 
 
 class StateToAction(nn.Module):
     def __init__(self, in_features, out_actions, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        hidden_features = 64
+        hidden_features1 = 512
+        hidden_features2 = 300
         self.net = nn.Sequential(
             nn.BatchNorm1d(in_features),
             # nn.Dropout(p = 0.2),
-            nn.Linear(in_features=in_features, out_features=hidden_features),
-            nn.BatchNorm1d(hidden_features),
-            nn.Tanh(), # ReLU(),
+            nn.Linear(in_features=in_features, out_features=hidden_features1),
+            # nn.BatchNorm1d(hidden_features1),
+            nn.ReLU(), # nn.Tanh(), # ReLU(),
             # nn.Dropout(p = 0.2),
-            # nn.Linear(in_features=hidden_features, out_features=hidden_features),
-            # nn.BatchNorm1d(hidden_features),
-            # nn.Tanh(), # ReLU(),
-            nn.Linear(in_features=hidden_features, out_features=out_actions),
+            nn.Linear(in_features=hidden_features1, out_features=hidden_features2),
+            nn.BatchNorm1d(hidden_features2),
+            nn.Tanh(), # ReLU(),
+            nn.Linear(in_features=hidden_features2, out_features=out_actions),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -49,18 +51,19 @@ class StateToAction(nn.Module):
 class StateActionToQValue(nn.Module):
     def __init__(self, in_features, in_actions, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        hidden_features = 64
+        hidden_features1 = 512
+        hidden_features2 = 300
         self.net = nn.Sequential(
             nn.BatchNorm1d((in_features + in_actions)),
             # nn.Dropout(p = 0.2),
-            nn.Linear(in_features=(in_features + in_actions), out_features=hidden_features),
-            nn.BatchNorm1d(hidden_features),
-            nn.Tanh(), # ReLU(),
+            nn.Linear(in_features=(in_features + in_actions), out_features=hidden_features1),
+            # nn.BatchNorm1d(hidden_features1),
+            nn.ReLU(), # nn.Tanh(), # ReLU(),
             # nn.Dropout(p = 0.2),
-            # nn.Linear(in_features=hidden_features, out_features=hidden_features),
-            # nn.BatchNorm1d(hidden_features),
-            # nn.Tanh(), # ReLU(),
-            nn.Linear(in_features=hidden_features, out_features=1),
+            nn.Linear(in_features=hidden_features1, out_features=hidden_features2),
+            nn.BatchNorm1d(hidden_features2),
+            nn.Tanh(), # ReLU(),
+            nn.Linear(in_features=hidden_features2, out_features=1),
         )
 
     def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
@@ -70,27 +73,22 @@ class StateActionToQValue(nn.Module):
 
 
 def get_action(parcel: Dict, *, agent: StateToAction, explore=False):
-    """'participant' representing the agent. Epsion greedy strategy:
-    1 - epsion - take the "best action" - explotation
-    epsilon - take a random action - exploration (can still by chance take the "best action")
+    """'participant' representing the agent. when 'explore' adds noise. 
     """
 
-    # if explore and np.random.binomial(1, parcel['epsilon']) > 0:
-    #     parcel['action'] = np.random.choice(range(agent.out_features))
-    # else:
-    #     obs = parcel['obs']
-    #     q_values = agent(torch.tensor(obs))
-    #     _, action = q_values.max(dim=0) # or just argmax..
-    #     parcel['action'] = action.item()
     obs = parcel['obs']
-    # print(f'{obs.shape=}')
-    assert not agent.training
+    assert not agent.training # the BN above needs more than 1 sample during training..
     action = agent(torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
     if explore:
-        action = torch.clip(action + torch.rand_like(action), -0.4, 0.4) # -2.0, 2.0) # for Pendulum-v1
-    parcel['action'] = action.squeeze().detach().numpy() # .item()
-    if len(parcel['action'].shape) == 0:
-        parcel['action'] = parcel['action'].reshape((1, )) # for Pendulum-v1
+        noise = torch.randn_like(action) * 0.1
+        # noise.clamp_(-0.5, 0.5)
+        # parcel['noise'] = noise.squeeze().detach().numpy()
+        # print(f'{action=}')
+        # print(f'{noise=}')
+        action = torch.clamp(action + noise, -2.0, 2.0) # why not -2.0, 2.0 ? for Pendulum-v1 # for Humanoid? * 0.05, -0.4, 0.4) # -
+        # print(f'{action=}')
+        # exit(0)
+    parcel['action'] = action.squeeze(0).detach().numpy() # .item()
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -122,43 +120,50 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
 
 @contextmanager
-def start_train(agent: StateToAction):
+def start_train(model: nn.Module):
     try:
-        agent.train()
-        yield agent
+        model.train()
+        yield model
     finally:
-        agent.eval()
+        model.eval()
 
 
-def train(env, agent: StateToAction, critic: StateActionToQValue, total_timesteps):
-    """Given a model (agent) and a critic
-    (which should be of the same sort and which values are overridden in the begining).
-    Train the model"""
+def train(env, actor: StateToAction, critic: StateActionToQValue, total_timesteps):
+    """Given a model (agent) and a critic. Train the model (and the critic) for 'total_timesteps' steps."""
 
     rendering_env = gym.make(gym_environment, render_mode="rgb_array_list")
 
     state_space = env.observation_space.shape[0] # alternatively take it from agent/target...
     action_space = env.action_space.shape[-1]
-    target_agent = StateToAction(state_space, out_actions=action_space)
+    target_actor = StateToAction(state_space, out_actions=action_space)
     target_critic = StateActionToQValue(state_space, action_space)
-    target_agent.load_state_dict(agent.state_dict()) # initialize the policy and the target with the same (random) values
+    target_actor.load_state_dict(actor.state_dict()) # initialize the policy and the target with the same (random) values
     target_critic.load_state_dict(critic.state_dict()) # same here
 
-    agent.eval() # when we'll actually train, we'll say it explicitly below (in learn)
+    actor.eval() # when we'll actually train, we'll say it explicitly below (in learn)
     critic.eval() # same here
 
-    target_agent.eval()
+    target_actor.eval()
     target_critic.eval()
 
+    if use_batch_normilization:
+        actor_batch_norm_stats = tp_torch_utils.get_parameters_by_name(actor, ["running_"])
+        critic_batch_norm_stats = tp_torch_utils.get_parameters_by_name(critic, ["running_"])
+        actor_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_actor, ["running_"])
+        critic_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic, ["running_"])
+
     discount = 0.99
-    K = 1
-    batch_size = 128
+    gradient_steps = 1
+    batch_size = 100
+    learning_starts = 100
+    replay_buffer_size = 100_000
+    policy_delay = 2
 
     replay_buffer_collector = tp_utils.ReplayBufferCollector(
-        collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'])
+        collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'], max_entries=replay_buffer_size)
 
-    optimizer_agent = torch.optim.Adam(agent.parameters(), lr=1e-5)
-    optimizer_critic = torch.optim.Adam(critic.parameters(), lr=1e-5)
+    optimizer_agent = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    optimizer_critic = torch.optim.Adam(critic.parameters(), lr=1e-3)
     # scheduler_agent = ExponentialLR(optimizer_agent, gamma=0.99)
     # scheduler_critic = ExponentialLR(optimizer_critic, gamma=0.99)
 
@@ -169,25 +174,29 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
         tau = 0.005 # if needed, can use two different values
         tp_torch_utils.polyak_update(agent.parameters(), target_agent.parameters(), tau) # agent -> target_agent
         tp_torch_utils.polyak_update(critic.parameters(), target_critic.parameters(), tau) # critic -> target_critic
+        if use_batch_normilization:
+            # Copy running stats, see GH issue #996 (took it from https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/td3/td3.py)
+            tp_torch_utils.polyak_update(critic_batch_norm_stats, critic_batch_norm_stats_target, 1.0)
+            tp_torch_utils.polyak_update(actor_batch_norm_stats, actor_batch_norm_stats_target, 1.0)
 
     def learn(parcel: dict):
 
-        with start_train(agent), start_train(critic):
+        with start_train(actor), start_train(critic):
 
             if parcel['step'] == 0:
                 parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr']
                 parcel['lr_critic'] = optimizer_critic.param_groups[0]['lr']
 
-            if parcel['step'] % 1 == 0:
-                update_target(target_agent, target_critic, agent, critic)
+            if parcel['step'] % policy_delay == 0:
+                update_target(target_actor, target_critic, actor, critic)
 
-            if parcel['step'] < 200: # we'll start really learning only after we collect some steps
+            if parcel['step'] < learning_starts: # we'll start really learning only after we collect some steps
                 return
 
             replay_buffer = replay_buffer_collector.replay_buffer
 
-            rewards = (x['reward'] for x in replay_buffer)
-            parcel['Mean Rewards/train'] = sum(rewards) / len(replay_buffer) # taking from the replay_buffer ? TODO: !!!
+            rewards = [x['reward'] for x in replay_buffer[-1000:]]
+            parcel['Mean Rewards/train'] = np.mean(rewards) # taking from the replay_buffer ? TODO: !!!
 
             losses_agent = []
             losses_critic = []
@@ -195,7 +204,7 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
             replay_buffer_dataloader = torch.utils.data.DataLoader(
                 replay_buffer, batch_size=batch_size, shuffle=True)
 
-            for _, batch in zip(range(K), replay_buffer_dataloader):
+            for _, batch in zip(range(gradient_steps), replay_buffer_dataloader):
 
                 if len(batch['obs']) < 2:
                     continue
@@ -210,7 +219,7 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
                 # truncated = batch['truncated']
 
                 with torch.no_grad():
-                    next_actions = target_agent(next_obs)
+                    next_actions = target_actor(next_obs)
                     next_obs_q_values = target_critic(next_obs, next_actions).squeeze()
                     target = reward + torch.where(terminated, 0, discount * next_obs_q_values)
 
@@ -228,7 +237,7 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
 
                 optimizer_agent.zero_grad()
 
-                loss = -critic(obs, agent(obs)).mean() # let's maximize this value (hence the minus sign)
+                loss = -critic(obs, actor(obs)).mean() # let's maximize this value (hence the minus sign)
 
                 loss.backward()
 
@@ -264,19 +273,27 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
         terminated = parcel.pop('terminated', False)
         truncated = parcel.pop('truncated', False) 
         if terminated or truncated:
+            started_step = parcel.get('started_step', 0)
+            parcel['episode_length'] = parcel['step'] - started_step
+            parcel['started_step'] = parcel['step']
             tp_gym_utils.call_reset(parcel, env=env)
 
     # def take_interesting_info(parcel: dict):
     #     parcel.update(parcel.pop('info'))
 
     def record_video(parcel: dict):
-        if parcel['step'] % 1000 != 0:
+        """When called, either returns immediatly, or renders a one episode video."""
+
+        if parcel['step'] % 5000 != 0:
             return
+
+        # Note, we make here usage of "rendering_env" which is slower than "env" as it includes rendering.
+        # Those environments are assumed to be similar in all other aspects.
 
         def get_one_episode_participants():
             yield functools.partial(tp_gym_utils.call_reset, env=rendering_env)
             yield from itertools.cycle([
-                functools.partial(get_action, agent=agent, explore=False),
+                functools.partial(get_action, agent=actor, explore=False),
                 functools.partial(tp_gym_utils.call_step, env=rendering_env),
                 tp_gym_utils.check_done,
             ])
@@ -288,18 +305,21 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
             frames=rendering_env.render(),
             video_folder="videos",
             episode_index=parcel['step'],
-            fps=env.metadata["render_fps"],
+            fps=rendering_env.metadata["render_fps"],
         )
 
     def get_train_participants():
         with (tp_tb_utils.Logging(
-            path=f"runs/Humanoid_ddpg_{datetime.datetime.now().strftime('%H_%M%p_on_%B_%d_%Y')}_{discount=}",
+            path=f"runs/Humanoid_ddpg_{datetime.datetime.now().strftime('%Y_%B_%d__%H_%M%p')}_{discount=}",
             track=[
                 'Mean Rewards/train',
                 'Loss(agent)/train',
                 'Loss(critic)/train',
                 'lr_critic',
                 'lr_agent',
+                'episode_length',
+                'action',
+                # 'noise',
 
                 # 'reward_survive',
                 # 'reward_forward',
@@ -315,7 +335,7 @@ def train(env, agent: StateToAction, critic: StateActionToQValue, total_timestep
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
                 # set_epsilon,
-                functools.partial(get_action, agent=agent, explore=True),
+                functools.partial(get_action, agent=actor, explore=True),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
                 replay_buffer_collector,
                 learn,
@@ -352,15 +372,25 @@ def main():
     act = StateToAction(state_space, out_actions=action_space) # This is the agent
     critic = StateActionToQValue(state_space, action_space)
 
+    name_of_model_file_act = 'act_state.pth'
+    name_of_model_file_critic = 'critic_state.pth'
+
+    if False:
+        act.load_state_dict(torch.load(name_of_model_file_act, weights_only=True))
+        critic.load_state_dict(torch.load(name_of_model_file_critic, weights_only=True))
+
     mean_reward_before_train = evaluate(env, act, 100)
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(env, act, critic, total_timesteps=100_000)
+    train(env, act, critic, total_timesteps=24_000)
 
     mean_reward_after_train = evaluate(env, act, 100)
     print("after training")
     print(f'{mean_reward_after_train=}')
+
+    torch.save(act.state_dict(), name_of_model_file_act)
+    torch.save(critic.state_dict(), name_of_model_file_critic)
 
 
 if __name__ == "__main__":
