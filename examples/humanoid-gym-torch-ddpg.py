@@ -27,20 +27,16 @@ use_batch_normilization = False
 class StateToAction(nn.Module):
     def __init__(self, in_features, out_actions, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        hidden_features1 = 512
-        hidden_features2 = 300
-        self.net = nn.Sequential(
-            nn.BatchNorm1d(in_features),
-            # nn.Dropout(p = 0.2),
-            nn.Linear(in_features=in_features, out_features=hidden_features1),
-            # nn.BatchNorm1d(hidden_features1),
-            nn.ReLU(), # nn.Tanh(), # ReLU(),
-            # nn.Dropout(p = 0.2),
-            nn.Linear(in_features=hidden_features1, out_features=hidden_features2),
-            nn.BatchNorm1d(hidden_features2),
-            nn.Tanh(), # ReLU(),
-            nn.Linear(in_features=hidden_features2, out_features=out_actions),
-        )
+        layers = []
+        in_f = in_features
+        for out_f in [400, 300]:
+            if use_batch_normilization:
+                layers.append(nn.BatchNorm1d(in_f))
+            layers.append(nn.Linear(in_features=in_f, out_features=out_f))
+            layers.append(nn.ReLU())
+            in_f = out_f
+        layers.append(nn.Linear(in_features=in_f, out_features=out_actions))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         """obs -> action (regression)"""
@@ -51,20 +47,16 @@ class StateToAction(nn.Module):
 class StateActionToQValue(nn.Module):
     def __init__(self, in_features, in_actions, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        hidden_features1 = 512
-        hidden_features2 = 300
-        self.net = nn.Sequential(
-            nn.BatchNorm1d((in_features + in_actions)),
-            # nn.Dropout(p = 0.2),
-            nn.Linear(in_features=(in_features + in_actions), out_features=hidden_features1),
-            # nn.BatchNorm1d(hidden_features1),
-            nn.ReLU(), # nn.Tanh(), # ReLU(),
-            # nn.Dropout(p = 0.2),
-            nn.Linear(in_features=hidden_features1, out_features=hidden_features2),
-            nn.BatchNorm1d(hidden_features2),
-            nn.Tanh(), # ReLU(),
-            nn.Linear(in_features=hidden_features2, out_features=1),
-        )
+        layers = []
+        in_f = in_features + in_actions
+        for out_f in [400, 300]:
+            if use_batch_normilization:
+                layers.append(nn.BatchNorm1d(in_f))
+            layers.append(nn.Linear(in_features=in_f, out_features=out_f))
+            layers.append(nn.ReLU())
+            in_f = out_f
+        layers.append(nn.Linear(in_features=in_f, out_features=1))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """obs, action -> q-values (regression)"""
@@ -152,10 +144,10 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
         actor_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_actor, ["running_"])
         critic_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic, ["running_"])
 
-    discount = 0.99
-    gradient_steps = 1
-    batch_size = 100
-    learning_starts = 100
+    discount = 0.98 # AKA: gamma
+    gradient_steps = 2 # I match it to the length of the episode. make sense?
+    batch_size = 256
+    learning_starts = 1000
     replay_buffer_size = 100_000
     policy_delay = 2
 
@@ -192,6 +184,9 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
 
             if parcel['step'] < learning_starts: # we'll start really learning only after we collect some steps
                 return
+
+            # if not parcel['terminated'] and not parcel['truncated']:
+            #     return # we'll learn when the episode ends
 
             replay_buffer = replay_buffer_collector.replay_buffer
 
