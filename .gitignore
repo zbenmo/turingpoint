@@ -136,3 +136,10 @@ tianshou/
 # TensorBoard
 runs/
 videos/
+
+# Torch models
+act_state.pth
+critic_state.pth
+
+# Optuna (SQLLITE DB)
+optuna_trials.db
