@@ -20,12 +20,12 @@ import turingpoint.torch_utils as tp_torch_utils
 import turingpoint as tp
 
 
-gym_environment = 'Humanoid-v5'
+gym_environment = "Pendulum-v1"
 use_batch_normilization = False
 
 
 class StateToAction(nn.Module):
-    def __init__(self, in_features, out_actions, env, *args, **kwargs):
+    def __init__(self, in_features, out_actions, *args, **kwargs):
         super().__init__(*args, **kwargs)
         layers = []
         in_f = in_features
@@ -38,22 +38,10 @@ class StateToAction(nn.Module):
         layers.append(nn.Linear(in_features=in_f, out_features=out_actions))
         self.net = nn.Sequential(*layers)
 
-        # # action rescaling (copied from https://docs.cleanrl.dev/rl-algorithms/ddpg/#implementation-details)
-        # self.register_buffer(
-        #     "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-        # )
-        # self.register_buffer(
-        #     "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
-        # )
-
-
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         """obs -> action (regression)"""
 
-        # return F.tanh(self.net(obs)) * 4.0
-        x = self.net(obs)
-        return x
-        # return x * self.action_scale + self.action_bias # (copied from https://docs.cleanrl.dev/rl-algorithms/ddpg/#implementation-details)
+        return self.net(obs)
 
 
 class StateActionToQValue(nn.Module):
@@ -67,7 +55,6 @@ class StateActionToQValue(nn.Module):
             layers.append(nn.Linear(in_features=in_f, out_features=out_f))
             layers.append(nn.ReLU())
             in_f = out_f
-        self.state_net = nn.Sequential(*layers)
         layers.append(nn.Linear(in_features=in_f, out_features=1))
         self.net = nn.Sequential(*layers)
 
@@ -86,7 +73,7 @@ def get_action(parcel: Dict, *, agent: StateToAction, explore=False):
     action = agent(torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
     if explore:
         noise = torch.randn_like(action) * 0.1
-        action = torch.clamp(action + noise, -0.4, 0.4)
+        action = torch.clamp(action + noise, -2.0, 2.0)
     parcel['action'] = action.squeeze(0).detach().numpy() # .item()
 
 
@@ -134,7 +121,7 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
 
     state_space = env.observation_space.shape[0] # alternatively take it from agent/target...
     action_space = env.action_space.shape[-1]
-    target_actor = StateToAction(state_space, out_actions=action_space, env=env)
+    target_actor = StateToAction(state_space, out_actions=action_space)
     target_critic = StateActionToQValue(state_space, action_space)
     target_actor.load_state_dict(actor.state_dict()) # initialize the policy and the target with the same (random) values
     target_critic.load_state_dict(critic.state_dict()) # same here
@@ -151,19 +138,17 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
         actor_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_actor, ["running_"])
         critic_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic, ["running_"])
 
-    discount = 0.995 # AKA: gamma
-    gradient_steps = 2
+    discount = 0.98 # AKA: gamma
+    gradient_steps = 2 # I match it to the length of the episode. make sense?
     batch_size = 256
-    learning_starts = 25_000
-    replay_buffer_size = 1_000_000
+    learning_starts = 1000
+    replay_buffer_size = 100_000
     policy_delay = 2
 
     replay_buffer_collector = tp_utils.ReplayBufferCollector(
         collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'], max_entries=replay_buffer_size)
 
-    per_episode_rewards_collector = tp_utils.Collector(['reward'])
-
-    optimizer_agent = torch.optim.Adam(actor.parameters(), lr=1e-4)
+    optimizer_agent = torch.optim.Adam(actor.parameters(), lr=1e-3)
     optimizer_critic = torch.optim.Adam(critic.parameters(), lr=1e-3)
     # scheduler_agent = ExponentialLR(optimizer_agent, gamma=0.99)
     # scheduler_critic = ExponentialLR(optimizer_critic, gamma=0.99)
@@ -172,7 +157,7 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
     # min_epsilon = 0.05
 
     def update_target(target_agent, target_critic, agent, critic):
-        tau = 0.001 # if needed, can use two different values
+        tau = 0.005 # if needed, can use two different values
         tp_torch_utils.polyak_update(agent.parameters(), target_agent.parameters(), tau) # agent -> target_agent
         tp_torch_utils.polyak_update(critic.parameters(), target_critic.parameters(), tau) # critic -> target_critic
         if use_batch_normilization:
@@ -188,16 +173,19 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
                 parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr']
                 parcel['lr_critic'] = optimizer_critic.param_groups[0]['lr']
 
-            replay_buffer = replay_buffer_collector.replay_buffer
-
-            rewards = [x['reward'] for x in replay_buffer[-1000:]]
-            parcel['Mean Rewards/train'] = np.mean(rewards) # taking from the replay_buffer ? TODO: !!!
+            if parcel['step'] % policy_delay == 0:
+                update_target(target_actor, target_critic, actor, critic)
 
             if parcel['step'] < learning_starts: # we'll start really learning only after we collect some steps
                 return
 
-            if parcel['step'] % policy_delay == 0:
-                update_target(target_actor, target_critic, actor, critic)
+            # if not parcel['terminated'] and not parcel['truncated']:
+            #     return # we'll learn when the episode ends
+
+            replay_buffer = replay_buffer_collector.replay_buffer
+
+            rewards = [x['reward'] for x in replay_buffer[-1000:]]
+            parcel['Mean Rewards/train'] = np.mean(rewards) # taking from the replay_buffer ? TODO: !!!
 
             losses_agent = []
             losses_critic = []
@@ -274,17 +262,9 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
         terminated = parcel.pop('terminated', False)
         truncated = parcel.pop('truncated', False) 
         if terminated or truncated:
-            # some extra logging stuff
             started_step = parcel.get('started_step', 0)
-            episode_rewards = [x['reward'] for x in per_episode_rewards_collector.get_entries()]
-            per_episode_rewards_collector.clear_entries()
-            assert parcel['step'] - started_step == len(episode_rewards), (
-                f'{parcel["step"]} - {started_step} != {len(episode_rewards)}'
-            )
-            parcel['episode_length'] = len(episode_rewards)
-            parcel['episode_reward'] = functools.reduce(lambda r, x: x + r * discount, reversed(episode_rewards), 0)
+            parcel['episode_length'] = parcel['step'] - started_step
             parcel['started_step'] = parcel['step']
-            # here is what we've actually came to do
             tp_gym_utils.call_reset(parcel, env=env)
 
     # def take_interesting_info(parcel: dict):
@@ -319,16 +299,15 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
 
     def get_train_participants():
         with (tp_tb_utils.Logging(
-            path=f"runs/humanoid_ddpg_{datetime.datetime.now().strftime('%Y_%B_%d__%H_%M%p')}_{discount=}",
+            path=f"runs/pendulum_ddpg_{datetime.datetime.now().strftime('%Y_%B_%d__%H_%M%p')}_{discount=}",
             track=[
                 'Mean Rewards/train',
                 'Loss(agent)/train',
                 'Loss(critic)/train',
-                # 'lr_critic',
-                # 'lr_agent',
+                'lr_critic',
+                'lr_agent',
                 'episode_length',
-                'episode_reward',
-                # 'action',
+                'action',
                 # 'noise',
 
                 # 'reward_survive',
@@ -349,7 +328,6 @@ def train(env, actor: StateToAction, critic: StateActionToQValue, total_timestep
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
                 replay_buffer_collector,
                 learn,
-                per_episode_rewards_collector,
                 # take_interesting_info, # those will be also logged.
                 logging,
                 record_video,
@@ -380,7 +358,7 @@ def main():
     # print(f'{state_space=}')
     # print(f'{action_space=}')
 
-    act = StateToAction(state_space, out_actions=action_space, env=env) # This is the agent
+    act = StateToAction(state_space, out_actions=action_space) # This is the agent
     critic = StateActionToQValue(state_space, action_space)
 
     name_of_model_file_act = 'act_state.pth'
@@ -394,7 +372,7 @@ def main():
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(env, act, critic, total_timesteps=1_000_000)
+    train(env, act, critic, total_timesteps=24_000)
 
     mean_reward_after_train = evaluate(env, act, 100)
     print("after training")
