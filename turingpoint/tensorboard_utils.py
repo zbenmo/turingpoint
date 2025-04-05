@@ -19,9 +19,19 @@ class Logging:
     def __call__(self, parcel: dict):
         step = parcel['step']
         for key in self.track:
-            val = parcel.pop(key, None)
-            if val is not None:
-                self.writer.add_scalar(key, val, step)
+            if isinstance(key, str):
+                val = parcel.pop(key, None)
+                if val is not None:
+                    self.writer.add_scalar(key, val, step)
+            elif isinstance(key, dict):
+                main_tag = key['main_tag']
+                elements = key['elements']
+                self.writer.add_scalars(main_tag, {
+                    k: v for k in elements if (v := parcel.pop(k, None)) != None
+                },
+                global_step=step)
+            else:
+                assert False, f'{type(key)}'
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.writer.close()

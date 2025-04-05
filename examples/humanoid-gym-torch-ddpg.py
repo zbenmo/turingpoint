@@ -347,14 +347,24 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
                 # 'action',
                 # 'noise',
 
-                'reward_survive',
-                'reward_forward',
-                'reward_ctrl',
+                'distance_from_origin',
+                {
+                    'main_tag': 'reward',
+                    'elements': [
+                        'reward_contact',
+                        'reward_ctrl',
+                        'reward_forward',
+                        'reward_survive',
+                        'reward',
+                    ]
+                },
+                # 'tendon_length',
+                # 'tendon_velocity',
+                # 'x_position',
+                # 'x_velocity',
+                # 'y_position',
+                # 'y_velocity',
 
-                # 'Loss(agent)+std/train',
-                # 'Loss(agent)-std/train',
-                # 'Loss(critic)+std/train',
-                # 'Loss(critic)-std/train',
             ]) as logging,
             tp_utils.StepsTracker(total_timesteps=total_timesteps, desc="training steps") as steps_tracker):
 
@@ -432,7 +442,7 @@ def optuna_objective(optuna_trial, env):
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    total_timesteps = optuna_trial.suggest_categorical("total_timesteps", [40_000])
+    total_timesteps = optuna_trial.suggest_categorical("total_timesteps", [1_000_000])
     train(optuna_trial, env, act, critic, total_timesteps=total_timesteps)
 
     mean_reward_after_train = evaluate(env, act, 100)
