@@ -3,11 +3,14 @@ import copy
 import datetime
 import functools
 import itertools
+from pathlib import Path
 import random
 from typing import Dict, Tuple
+import cv2
 import numpy as np
 import gymnasium as gym
 from gymnasium.utils.save_video import save_video
+import moviepy
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -191,6 +194,9 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
     # max_epsilon = 0.15
     # min_epsilon = 0.05
 
+    videos_path = Path("videos")
+    videos_path.mkdir(exist_ok=True)
+
     def update_target(target_agent, target_critic, agent, critic):
         tau = optuna_trial.suggest_float("tau", 0.05, 0.05) # if needed, can use two different values
         tp_torch_utils.polyak_update(agent.parameters(), target_agent.parameters(), tau) # agent -> target_agent
@@ -307,7 +313,7 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
     def take_interesting_info(parcel: dict):
         parcel.update(parcel.pop('info'))
 
-    def record_video(parcel: dict):
+    def record_video(parcel: dict, videos_path: Path):
         """When called, either returns immediatly, or renders a one episode video."""
 
         if parcel['step'] % 5000 != 0:
@@ -327,12 +333,31 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
         one_episode_assembly = tp.Assembly(get_one_episode_participants)
         one_episode_assembly.launch()
 
-        save_video(
-            frames=rendering_env.render(),
-            video_folder="videos",
-            episode_index=parcel['step'],
-            fps=rendering_env.metadata["render_fps"],
+        frames = rendering_env.render()
+
+        # Create a video from the frames
+        clip = moviepy.ImageSequenceClip([np.uint8(frame) for frame in frames], fps=rendering_env.metadata["render_fps"])
+
+        # Add text
+        text = moviepy.TextClip(text=f'After step {parcel["step"]}', font="Lato-Medium.ttf", font_size=24, color='white')
+        text = text.with_duration(clip.duration).with_position(("center", "top"))
+
+        # Combine text with the video frames
+        final_clip = moviepy.CompositeVideoClip([clip, text])
+
+        # Save the output video
+        final_clip.write_videofile(
+            videos_path / f"Humanoid-v5-DDPG-end-of-step-{parcel['step']}.mp4",
+            codec="libx264",
+            logger=None
         )
+
+        # save_video(
+        #     frames=rendering_env.render(),
+        #     video_folder="videos",
+        #     episode_index=parcel['step'],
+        #     fps=rendering_env.metadata["render_fps"],
+        # )
 
     def get_train_participants():
         with (tp_tb_utils.Logging(
@@ -381,7 +406,7 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
                 per_episode_rewards_collector,
                 take_interesting_info, # those will be also logged.
                 logging,
-                record_video,
+                functools.partial(record_video, videos_path=videos_path),
                 steps_tracker, # can raise Done
                 advance,
                 reset_if_needed
@@ -444,7 +469,7 @@ def optuna_objective(optuna_trial):
     name_of_model_file_act = 'act_state.pth'
     name_of_model_file_critic = 'critic_state.pth'
 
-    if True:
+    if False:
         act.load_state_dict(torch.load(name_of_model_file_act, weights_only=True))
         critic.load_state_dict(torch.load(name_of_model_file_critic, weights_only=True))
 
