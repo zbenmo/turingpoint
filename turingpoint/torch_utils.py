@@ -1,6 +1,8 @@
+from contextlib import contextmanager
 from itertools import zip_longest
 from typing import Iterable
 import torch
+from torch import nn
 
 
 # Taken as is from https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/utils.py
@@ -62,3 +64,12 @@ def get_parameters_by_name(model: torch.nn.Module, included_names: Iterable[str]
         that matches the queried names.
     """
     return [param for name, param in model.state_dict().items() if any([key in name for key in included_names])]
+
+
+@contextmanager
+def start_train(model: nn.Module):
+    try:
+        model.train()
+        yield model
+    finally:
+        model.eval()

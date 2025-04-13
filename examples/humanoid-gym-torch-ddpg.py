@@ -13,7 +13,6 @@ from torch import nn
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import ExponentialLR
 from tqdm import trange
-from contextlib import contextmanager
 import optuna
 
 import turingpoint.gymnasium_utils as tp_gym_utils
@@ -62,7 +61,9 @@ class StateActionToQValue(nn.Module):
     def __init__(self, in_features, in_actions, *args, **kwargs):
         use_batch_normilization = kwargs.pop('use_batch_normilization', None)
         layers_critic = kwargs.pop('layers_critic', None)
+        use_dropout = True
         super().__init__(*args, **kwargs)
+
         layers = []
         in_f = in_features + in_actions
         for out_f in layers_critic:
@@ -70,8 +71,9 @@ class StateActionToQValue(nn.Module):
                 layers.append(nn.BatchNorm1d(in_f))
             layers.append(nn.Linear(in_features=in_f, out_features=out_f))
             layers.append(nn.ReLU())
+            if use_dropout:
+                layers.append(nn.Dropout(p=0.2))
             in_f = out_f
-        self.state_net = nn.Sequential(*layers)
         layers.append(nn.Linear(in_features=in_f, out_features=1))
         self.net = nn.Sequential(*layers)
 
@@ -81,7 +83,7 @@ class StateActionToQValue(nn.Module):
         return self.net(torch.concat((obs, actions), dim=1))
 
 
-def get_action(parcel: Dict, *, agent: StateToAction, explore=False):
+def get_action(parcel: Dict, *, agent: StateToAction, explore=False, noise_level=None):
     """'participant' representing the agent. when 'explore' adds noise. 
     """
 
@@ -89,9 +91,18 @@ def get_action(parcel: Dict, *, agent: StateToAction, explore=False):
     assert not agent.training # the BN above needs more than 1 sample during training..
     action = agent(torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
     if explore:
-        noise = torch.randn_like(action) * 0.1
+        noise = torch.randn_like(action) * noise_level
         action = torch.clamp(action + noise, -0.4, 0.4)
     parcel['action'] = action.squeeze(0).detach().numpy() # .item()
+
+
+def punish_two_feet_in_the_air(parcel: Dict, *, env):
+    humanoid_env = env.unwrapped
+
+    left_foot_z = humanoid_env.get_body_com("left_foot")[2]   # Index 2 corresponds to the z-axis
+    right_foot_z = humanoid_env.get_body_com("right_foot")[2]
+
+    parcel['reward'] = parcel['reward'] - 10.0 * min(left_foot_z, right_foot_z) # want to punish when the two feet are in the air.
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -106,6 +117,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
         yield from itertools.cycle([
                 functools.partial(get_action, agent=agent),
                 functools.partial(tp_gym_utils.call_step, env=env),
+                functools.partial(punish_two_feet_in_the_air, env=env), 
                 rewards_collector,
                 tp_gym_utils.check_done
         ])
@@ -133,15 +145,6 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
 
 
-@contextmanager
-def start_train(model: nn.Module):
-    try:
-        model.train()
-        yield model
-    finally:
-        model.eval()
-
-
 def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, total_timesteps):
     """Given a model (agent) and a critic. Train the model (and the critic) for 'total_timesteps' steps."""
 
@@ -164,20 +167,21 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
         actor_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_actor, ["running_"])
         critic_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic, ["running_"])
 
-    discount = optuna_trial.suggest_categorical("discount", [0.995]) # AKA: gamma
-    gradient_steps = optuna_trial.suggest_categorical("gradient_steps", [2])
+    discount = optuna_trial.suggest_float("discount", 0.995, 0.995) # AKA: gamma
+    gradient_steps = optuna_trial.suggest_categorical("gradient_steps", [1])
     batch_size = optuna_trial.suggest_categorical("batch_size", [256])
-    learning_starts = optuna_trial.suggest_categorical("learning_starts", [25_000])
+    learning_starts = optuna_trial.suggest_int("learning_starts", 10_000, 10_000)
     replay_buffer_size = optuna_trial.suggest_categorical("replay_buffer_size", [1_000_000])
-    policy_delay = optuna_trial.suggest_categorical("policy_delay", [2])
+    policy_delay = optuna_trial.suggest_categorical("policy_delay", [1])
+    noise_level = optuna_trial.suggest_float("noise_level", 0.2, 0.2)
 
     replay_buffer_collector = tp_utils.ReplayBufferCollector(
         collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'], max_entries=replay_buffer_size)
 
     per_episode_rewards_collector = tp_utils.Collector(['reward'])
 
-    lr_agent = optuna_trial.suggest_categorical("lr_agent", [1e-4])
-    lr_critic = optuna_trial.suggest_categorical("lr_critic", [1e-3])
+    lr_agent = optuna_trial.suggest_float("lr_agent", 1e-4, 1e-4)
+    lr_critic = optuna_trial.suggest_float("lr_critic", 1e-3, 1e-3)
 
     optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent)
     optimizer_critic = torch.optim.Adam(critic.parameters(), lr=lr_critic)
@@ -188,7 +192,7 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
     # min_epsilon = 0.05
 
     def update_target(target_agent, target_critic, agent, critic):
-        tau = optuna_trial.suggest_categorical("tau", [0.001]) # if needed, can use two different values
+        tau = optuna_trial.suggest_float("tau", 0.05, 0.05) # if needed, can use two different values
         tp_torch_utils.polyak_update(agent.parameters(), target_agent.parameters(), tau) # agent -> target_agent
         tp_torch_utils.polyak_update(critic.parameters(), target_critic.parameters(), tau) # critic -> target_critic
         if use_batch_normilization:
@@ -198,7 +202,7 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
 
     def learn(parcel: dict):
 
-        with start_train(actor), start_train(critic):
+        with tp_torch_utils.start_train(actor), tp_torch_utils.start_train(critic):
 
             if parcel['step'] == 0:
                 parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr']
@@ -235,9 +239,11 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
                 terminated = batch['terminated']
                 # truncated = batch['truncated']
 
+                max_target = 2_000.0
+
                 with torch.no_grad():
                     next_actions = target_actor(next_obs)
-                    next_obs_q_values = target_critic(next_obs, next_actions).squeeze()
+                    next_obs_q_values = torch.clamp(target_critic(next_obs, next_actions), 0.0, max_target).squeeze()
                     target = reward + torch.where(terminated, 0, discount * next_obs_q_values)
 
                 optimizer_critic.zero_grad()
@@ -254,7 +260,9 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
 
                 optimizer_agent.zero_grad()
 
-                loss = -critic(obs, actor(obs)).mean() # let's maximize this value (hence the minus sign)
+                loss = -(
+                    torch.clamp(critic(obs, actor(obs)), 0.0, max_target)
+                ).mean() # let's maximize this value (hence the minus sign)
 
                 loss.backward()
 
@@ -262,26 +270,15 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
 
                 losses_agent.append(loss.item())
 
-                # if parcel['step'] % 5000 == 0:
+                # if parcel['step'] % 40_000 == 0:
                 #     scheduler_critic.step()
                 #     scheduler_agent.step()
                 #     parcel['lr_critic'] = optimizer_critic.param_groups[0]['lr'] # scheduler.get_last_lr()
                 #     parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr'] # scheduler.get_last_lr()
 
             parcel['Loss(agent)/train'] = np.mean(losses_agent)
-            # losses_agent_std = np.std(losses_agent)
-            # parcel['Loss(agent)+std/train'] = parcel['Loss(agent)/train'] + losses_agent_std
-            # parcel['Loss(agent)-std/train'] = parcel['Loss(agent)/train'] - losses_agent_std
             parcel['Loss(critic)/train'] = np.mean(losses_critic)
-            # losses_critic_std = np.std(losses_critic)
-            # parcel['Loss(critic)+std/train'] = parcel['Loss(critic)/train'] + losses_critic_std
-            # parcel['Loss(critic)-std/train'] = parcel['Loss(critic)/train'] - losses_critic_std
 
-    # def set_epsilon(parcel: dict):
-    #     parcel['epsilon'] = (
-    #         min_epsilon
-    #         + (max_epsilon - min_epsilon) * ((total_timesteps - parcel['step']) / total_timesteps)
-    #     )
 
     def advance(parcel: dict):
         parcel['obs'] = parcel.pop('next_obs')
@@ -298,7 +295,11 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
                 f'{parcel["step"]} - {started_step} != {len(episode_rewards)}'
             )
             parcel['episode_length'] = len(episode_rewards)
-            parcel['episode_reward'] = functools.reduce(lambda r, x: x + r * discount, reversed(episode_rewards), 0)
+            parcel['episode_reward'] = functools.reduce(
+                lambda episode_reward, reward: reward + episode_reward * discount,
+                reversed(episode_rewards),
+                0.0
+            )
             parcel['started_step'] = parcel['step']
             # here is what we've actually came to do
             tp_gym_utils.call_reset(parcel, env=env)
@@ -335,29 +336,29 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
 
     def get_train_participants():
         with (tp_tb_utils.Logging(
-            path=f"runs/humanoid_ddpg_{datetime.datetime.now().strftime('%Y_%B_%d__%H_%M%p')}_{discount=}",
+            path=f"runs/humanoid_ddpg_{optuna_trial.datetime_start.strftime('%Y_%B_%d__%H_%M%p')}_study_{optuna_trial.study.study_name}_trial_no_{optuna_trial.number}",
             track=[
                 'Mean Rewards/train',
                 'Loss(agent)/train',
                 'Loss(critic)/train',
-                # 'lr_critic',
-                # 'lr_agent',
+                'lr_critic',
+                'lr_agent',
                 'episode_length',
                 'episode_reward',
                 # 'action',
                 # 'noise',
 
                 'distance_from_origin',
-                {
-                    'main_tag': 'reward',
-                    'elements': [
-                        'reward_contact',
-                        'reward_ctrl',
-                        'reward_forward',
-                        'reward_survive',
-                        'reward',
-                    ]
-                },
+                # {
+                #     'main_tag': 'reward',
+                #     'elements': [
+                #         'reward_contact',
+                #         'reward_ctrl',
+                #         'reward_forward',
+                #         'reward_survive',
+                #         'reward',
+                #     ]
+                # },
                 # 'tendon_length',
                 # 'tendon_velocity',
                 # 'x_position',
@@ -372,8 +373,9 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
                 # set_epsilon,
-                functools.partial(get_action, agent=actor, explore=True),
+                functools.partial(get_action, agent=actor, explore=True, noise_level=noise_level),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
+                # functools.partial(punish_two_feet_in_the_air, env=env), 
                 replay_buffer_collector,
                 learn,
                 per_episode_rewards_collector,
@@ -407,22 +409,30 @@ def create_networks(state_space, action_space, env, use_batch_normilization, lay
 
 
 def create_networks_with_optuna_trial(optuna_trial, state_space, action_space, env):
-    use_batch_normilization = optuna_trial.suggest_categorical("use_batch_normilization", [False])
-    layers_critic = optuna_trial.suggest_categorical("layers_critic", ["[300, 400, 300, 400]"])
+    use_batch_normilization = optuna_trial.suggest_categorical("use_batch_normilization", [False]) # True
+    layers_critic = optuna_trial.suggest_categorical("layers_critic", [
+        "[300, 400, 300, 400]",
+        # "[300, 400, 400]",
+        # "[300, 400]"
+    ])
     layers_critic = ast.literal_eval(layers_critic)
 
     return create_networks(state_space, action_space, env, use_batch_normilization, layers_critic)
 
 
-def optuna_objective(optuna_trial, env):
+def optuna_objective(optuna_trial):
+
+    random.seed(1)
+    np.random.seed(1)
+    torch.manual_seed(1)
+
+    env = gym.make(gym_environment)
+    env.reset(seed=1)
 
     # state and obs/observations are used in this example interchangably.
 
     state_space = env.observation_space.shape[0]
     action_space = env.action_space.shape[-1]
-
-    # print(f'{state_space=}')
-    # print(f'{action_space=}')
 
     act, critic = create_networks_with_optuna_trial(
         optuna_trial=optuna_trial,
@@ -434,7 +444,7 @@ def optuna_objective(optuna_trial, env):
     name_of_model_file_act = 'act_state.pth'
     name_of_model_file_critic = 'critic_state.pth'
 
-    if False:
+    if True:
         act.load_state_dict(torch.load(name_of_model_file_act, weights_only=True))
         critic.load_state_dict(torch.load(name_of_model_file_critic, weights_only=True))
 
@@ -442,38 +452,32 @@ def optuna_objective(optuna_trial, env):
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    total_timesteps = optuna_trial.suggest_categorical("total_timesteps", [1_000_000])
+    total_timesteps = optuna_trial.suggest_categorical("total_timesteps", [200_000]) # 1_000_000
     train(optuna_trial, env, act, critic, total_timesteps=total_timesteps)
 
     mean_reward_after_train = evaluate(env, act, 100)
     print("after training")
     print(f'{mean_reward_after_train=}')
 
-    torch.save(act.state_dict(), name_of_model_file_act)
-    torch.save(critic.state_dict(), name_of_model_file_critic)
+    if True:
+        torch.save(act.state_dict(), name_of_model_file_act)
+        torch.save(critic.state_dict(), name_of_model_file_critic)
 
     return mean_reward_after_train
 
 
 def main():
 
-    random.seed(1)
-    np.random.seed(1)
-    torch.manual_seed(1)
-
     sqlite_file = 'optuna_trials.db'
     storage = f'sqlite:///{sqlite_file}'
     optuna_study = optuna.create_study(
         storage=storage,
-        study_name=f'{gym_environment} DDPG',
+        study_name=f'{gym_environment} DDPG - v4',
         direction="maximize",
         load_if_exists=True,
     )
 
-    env = gym.make(gym_environment)
-    env.reset(seed=1)
-
-    optuna_study.optimize(functools.partial(optuna_objective, env=env), n_trials=1)
+    optuna_study.optimize(optuna_objective, n_trials=1)
 
 
 if __name__ == "__main__":
