@@ -37,9 +37,14 @@ def make_sequence(participants: List[Participant]) -> Participant:
   return wrapped
 
 
+def call_every(parcel: dict, every_x_steps: int, protected: Participant):
+   """Use this participant-like to wrap another participant that should be called only every 'every_x_step' steps."""
+   if parcel['step'] % every_x_steps == 0:
+      protected(parcel)
+
+
 def discounted_reward_to_go(rewards: Sequence[float], gamma=1.0) -> Sequence[float]:
-    """
-    Helper function which takes a list of rewards {r_0, r_1, ..., r_t', ... r_T} and returns a list where the entry
+    """Helper function which takes a list of rewards {r_0, r_1, ..., r_t', ... r_T} and returns a list where the entry
     in each index t' is sum_{t'=t}^T gamma^(t'-t) * r_{t'}.
 
     Copied from homeworks - Berkeley CS 285
@@ -64,7 +69,7 @@ class StepsTracker:
         self.pbar = tqdm(total=self.total_timesteps, desc=self.desc)
         return self
 
-    def __call__(self, parcel):
+    def __call__(self, parcel: dict):
         step = parcel.get('step', None)
         step = 0 if step is None else step + 1
         parcel['step'] = step

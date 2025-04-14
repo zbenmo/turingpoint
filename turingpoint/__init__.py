@@ -3,7 +3,7 @@ from .definitions import Participant, Done
 from .self_play import SelfPlay
 
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
   Assembly,
