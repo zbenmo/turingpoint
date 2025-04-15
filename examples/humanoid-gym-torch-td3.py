@@ -97,13 +97,13 @@ def get_action(parcel: Dict, *, agent: StateToAction, explore=False, noise_level
     parcel['action'] = action.squeeze(0).detach().numpy() # .item()
 
 
-def punish_two_feet_in_the_air(parcel: Dict, *, env):
+def penalize_two_feet_in_the_air(parcel: Dict, *, env):
     humanoid_env = env.unwrapped
 
     left_foot_z = humanoid_env.get_body_com("left_foot")[2]   # Index 2 corresponds to the z-axis
     right_foot_z = humanoid_env.get_body_com("right_foot")[2]
 
-    parcel['reward'] = parcel['reward'] - 0.1 * min(left_foot_z, right_foot_z) # want to punish when the two feet are in the air.
+    parcel['reward'] = parcel['reward'] - 0.1 * min(left_foot_z, right_foot_z) # want to penalize when the two feet are in the air.
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -118,7 +118,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
         yield from itertools.cycle([
                 functools.partial(get_action, agent=agent),
                 functools.partial(tp_gym_utils.call_step, env=env),
-                functools.partial(punish_two_feet_in_the_air, env=env), 
+                functools.partial(penalize_two_feet_in_the_air, env=env), 
                 rewards_collector,
                 tp_gym_utils.check_done
         ])
@@ -182,11 +182,11 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
     noise_level = optuna_trial.suggest_float("noise_level", 0.2, 0.2)
 
     replay_buffer_collector = tp_utils.ReplayBufferCollector(
-        collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs'], max_entries=replay_buffer_size)
+        collect=['obs', 'action', 'reward', 'terminated', 'next_obs'], max_entries=replay_buffer_size)
 
     per_episode_rewards_collector = tp_utils.Collector(['reward'])
 
-    lr_agent = optuna_trial.suggest_float("lr_agent", 3e-4, 3e-4)
+    lr_agent = optuna_trial.suggest_float("lr_agent", 1e-4, 1e-4)
     lr_critic = optuna_trial.suggest_float("lr_critic", 3e-4, 3e-4)
 
     optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent)
@@ -238,10 +238,14 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
             losses_critic = []
 
             replay_buffer_dataloader = torch.utils.data.DataLoader(
-                random.choices(replay_buffer, k=gradient_steps * batch_size), batch_size=batch_size)
-
-            # tried also a dataloader with shuffle from all the entries, and to take only gradient_steps batches,
-            # yet I believe above is a bit faster (when replay_buffer grows)
+                replay_buffer,
+                batch_size=batch_size,
+                sampler=torch.utils.data.RandomSampler(
+                    data_source=replay_buffer,
+                    replacement=True, # to make stuff faster
+                    num_samples=gradient_steps * batch_size
+                )
+            ) # replacement=True to make it faster
 
             for batch in replay_buffer_dataloader:
 
@@ -255,7 +259,6 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
                 reward = batch['reward'].to(torch.float32)
                 next_obs = batch['next_obs'].to(torch.float32)
                 terminated = batch['terminated']
-                # truncated = batch['truncated']
 
                 # calculate the target
 
@@ -424,7 +427,7 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
                 # set_epsilon,
                 functools.partial(get_action, agent=actor, explore=True, noise_level=noise_level),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
-                functools.partial(punish_two_feet_in_the_air, env=env), 
+                functools.partial(penalize_two_feet_in_the_air, env=env), 
                 replay_buffer_collector,
                 learn,
                 per_episode_rewards_collector,
