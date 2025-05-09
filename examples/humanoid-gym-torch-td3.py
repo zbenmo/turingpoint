@@ -97,13 +97,13 @@ def get_action(parcel: Dict, *, agent: StateToAction, explore=False, noise_level
     parcel['action'] = action.squeeze(0).detach().numpy() # .item()
 
 
-def penalize_two_feet_in_the_air(parcel: Dict, *, env):
-    humanoid_env = env.unwrapped
+# def penalize_two_feet_in_the_air(parcel: Dict, *, env):
+#     humanoid_env = env.unwrapped
 
-    left_foot_z = humanoid_env.get_body_com("left_foot")[2]   # Index 2 corresponds to the z-axis
-    right_foot_z = humanoid_env.get_body_com("right_foot")[2]
+#     left_foot_z = humanoid_env.get_body_com("left_foot")[2]   # Index 2 corresponds to the z-axis
+#     right_foot_z = humanoid_env.get_body_com("right_foot")[2]
 
-    parcel['reward'] = parcel['reward'] - 0.1 * min(left_foot_z, right_foot_z) # want to penalize when the two feet are in the air.
+#     parcel['reward'] = parcel['reward'] - 0.1 * min(left_foot_z, right_foot_z) # want to penalize when the two feet are in the air.
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -118,7 +118,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
         yield from itertools.cycle([
                 functools.partial(get_action, agent=agent),
                 functools.partial(tp_gym_utils.call_step, env=env),
-                functools.partial(penalize_two_feet_in_the_air, env=env), 
+                # functools.partial(penalize_two_feet_in_the_air, env=env), 
                 rewards_collector,
                 tp_gym_utils.check_done
         ])
@@ -178,7 +178,7 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
     batch_size = optuna_trial.suggest_categorical("batch_size", [256])
     learning_starts = optuna_trial.suggest_int("learning_starts", 25_000, 25_000)
     replay_buffer_size = optuna_trial.suggest_categorical("replay_buffer_size", [1_000_000])
-    policy_delay = optuna_trial.suggest_categorical("policy_delay", [2])
+    policy_delay = optuna_trial.suggest_categorical("policy_delay", [1])
     noise_level = optuna_trial.suggest_float("noise_level", 0.2, 0.2)
 
     replay_buffer_collector = tp_utils.ReplayBufferCollector(
@@ -187,11 +187,11 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
     per_episode_rewards_collector = tp_utils.Collector(['reward'])
 
     lr_agent = optuna_trial.suggest_float("lr_agent", 1e-4, 1e-4)
-    lr_critic = optuna_trial.suggest_float("lr_critic", 3e-4, 3e-4)
+    lr_critic = optuna_trial.suggest_float("lr_critic", 2e-4, 2e-4)
 
-    optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent)
-    optimizer_critic = torch.optim.Adam(critic.parameters(), lr=lr_critic)
-    optimizer_critic2 = torch.optim.Adam(critic2.parameters(), lr=lr_critic)
+    optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent, weight_decay=5e-6)
+    optimizer_critic = torch.optim.Adam(critic.parameters(), lr=lr_critic, weight_decay=2e-5)
+    optimizer_critic2 = torch.optim.Adam(critic2.parameters(), lr=lr_critic, weight_decay=2e-5)
     # scheduler_agent = ExponentialLR(optimizer_agent, gamma=0.99)
     # scheduler_critic = ExponentialLR(optimizer_critic, gamma=0.99)
 
@@ -427,7 +427,7 @@ def train(optuna_trial, env, actor: StateToAction, critic: StateActionToQValue, 
                 # set_epsilon,
                 functools.partial(get_action, agent=actor, explore=True, noise_level=noise_level),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
-                functools.partial(penalize_two_feet_in_the_air, env=env), 
+                # functools.partial(penalize_two_feet_in_the_air, env=env), 
                 replay_buffer_collector,
                 learn,
                 per_episode_rewards_collector,
@@ -534,6 +534,9 @@ def optuna_objective(optuna_trial):
 
 
 def main():
+
+    # https://github.com/pytorch/pytorch/issues/51539#issuecomment-1890535975
+    torch.set_flush_denormal(True)
 
     sqlite_file = 'optuna_trials.db'
     storage = f'sqlite:///{sqlite_file}'
