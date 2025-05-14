@@ -44,6 +44,20 @@ class StateToActionDistributionParams(nn.Module):
         
         return mean, log_std
 
+    def sample_action(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]: # , torch.Tensor]:
+        actions_mean, actions_log_std = self(obs)
+        std = actions_log_std.exp()
+        normal_dist = torch.distributions.Normal(actions_mean, std)
+        # Reparameterize
+        x_t = normal_dist.rsample()
+        y_t = torch.tanh(x_t)
+        # For computing log probability, include tanh correction
+        log_prob = normal_dist.log_prob(x_t) - torch.log(1 - y_t.pow(2) + 1e-6)
+        log_prob = log_prob.sum(dim=-1) # , keepdim=True)
+        # ??? # Also return the squashed mean for evaluation
+        action = y_t * 0.4
+        return action, log_prob # , actions_mean
+
 
 class StateActionToQValue(nn.Module):
     def __init__(self, in_features, in_actions, *args, **kwargs):
@@ -77,14 +91,7 @@ def get_action(parcel: Dict, *, agent: StateToActionDistributionParams): # , exp
 
     obs = parcel['obs']
     assert not agent.training # the BN above needs more than 1 sample during training..
-    mean, log_std = agent(torch.tensor(obs, dtype=torch.float32).unsqueeze(0))
-    std = log_std.exp()
-    normal_dist = torch.distributions.Normal(mean, std)
-    raw_action = normal_dist.rsample()  # Reparameterization trick for differentiability
-    action = torch.tanh(raw_action) * 0.4  # Ensure action bounds between [-0.4, 0.4]
-    # if explore:
-    #     noise = torch.randn_like(action) * noise_level
-    #     action = torch.clamp(action + noise, -0.4, 0.4)
+    action, _ = agent.sample_action(torch.tensor(obs, dtype=torch.float32).unsqueeze(0)) # , actions_mean
     parcel['action'] = action.squeeze(0).detach().numpy() # .item()
 
 
@@ -157,7 +164,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
     discount = optuna_trial.suggest_float("discount", 0.99, 0.99) # AKA: gamma
     gradient_steps = optuna_trial.suggest_categorical("gradient_steps", [1])
     batch_size = optuna_trial.suggest_categorical("batch_size", [256])
-    learning_starts = optuna_trial.suggest_int("learning_starts", 1_000, 1_000) # 2
+    learning_starts = optuna_trial.suggest_int("learning_starts", 10_000, 10_000)
     replay_buffer_size = optuna_trial.suggest_categorical("replay_buffer_size", [1_000_000])
     policy_delay = optuna_trial.suggest_categorical("policy_delay", [1])
     # noise_level = optuna_trial.suggest_float("noise_level", 0.2, 0.2)
@@ -168,7 +175,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
     per_episode_rewards_collector = tp_utils.Collector(['reward'])
 
     lr_agent = optuna_trial.suggest_float("lr_agent", 1e-4, 1e-4)
-    lr_critic = optuna_trial.suggest_float("lr_critic", 2e-4, 2e-4)
+    lr_critic = optuna_trial.suggest_float("lr_critic", 3e-4, 3e-4)
 
     optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent) # , weight_decay=5e-6)
     optimizer_critic = torch.optim.Adam(critic.parameters(), lr=lr_critic) # , weight_decay=2e-5)
@@ -183,7 +190,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
     videos_path.mkdir(exist_ok=True)
 
     def update_target(target_agent, target_critic, target_critic2, agent, critic, critic2):
-        tau = optuna_trial.suggest_float("tau", 0.01, 0.01) # if needed, can use two different values
+        tau = optuna_trial.suggest_float("tau", 0.005, 0.005) # if needed, can use two different values
         tp_torch_utils.polyak_update(agent.parameters(), target_agent.parameters(), tau) # agent -> target_agent
         tp_torch_utils.polyak_update(critic.parameters(), target_critic.parameters(), tau) # critic -> target_critic
         tp_torch_utils.polyak_update(critic2.parameters(), target_critic2.parameters(), tau) # critic2 -> target_critic2
@@ -195,8 +202,8 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
 
     def learn(parcel: dict):
 
-        def bound_qvalue(q_value: 'torch.Tensor') -> 'torch.Tensor':
-            return q_value.clamp(-5e3, 5e3) # just as got very extreme values without this
+        # def bound_qvalue(q_value: 'torch.Tensor') -> 'torch.Tensor':
+        #     return q_value.clamp(-5e3, 5e3) # just as got very extreme values without this
 
         with tp_torch_utils.start_train(actor), tp_torch_utils.start_train(critic), tp_torch_utils.start_train(critic2):
 
@@ -246,19 +253,24 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
                 alpha = 0.1
 
                 with torch.no_grad():
-                    next_actions_mean, next_actions_log_std = target_actor(next_obs)
+                    next_actions, next_actions_log_prob = target_actor.sample_action(next_obs)
                     # print(f'{next_actions_mean.shape=}')
                     # print(f'{next_actions_log_std.shape=}')
-                    next_obs_q_values = target_critic(next_obs, next_actions_mean).squeeze()
-                    next_obs_q_values2 = target_critic2(next_obs, next_actions_mean).squeeze()
-                    q_min = torch.min(next_obs_q_values, next_obs_q_values2) - alpha * next_actions_log_std.sum(dim=-1) 
-                    target = bound_qvalue(reward + torch.where(terminated, 0, discount * q_min))
+                    next_obs_q_values = target_critic(next_obs, next_actions).squeeze()
+                    next_obs_q_values2 = target_critic2(next_obs, next_actions).squeeze()
+                    q_min = torch.min(next_obs_q_values, next_obs_q_values2)
+                     # .sum(dim=-1) 
+                    target = reward + torch.where(
+                        terminated,
+                        0.0,
+                        discount * (q_min - alpha * next_actions_log_prob)
+                    ) # bound_qvalue()
 
                 # optimize critic
 
                 optimizer_critic.zero_grad()
 
-                q_value = bound_qvalue(critic(obs, action)).squeeze()
+                q_value = critic(obs, action).squeeze() # bound_qvalue
 
                 loss = F.mse_loss(q_value, target)
                 loss.backward()
@@ -271,7 +283,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
 
                 optimizer_critic2.zero_grad()
 
-                q_value2 = bound_qvalue(critic2(obs, action)).squeeze()
+                q_value2 = critic2(obs, action).squeeze() # bound_qvalue(
 
                 loss = F.mse_loss(q_value2, target)
                 loss.backward()
@@ -282,10 +294,11 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
 
                 optimizer_agent.zero_grad()
 
-                actions_mean, actions_log_std = actor(obs)
+                action, log_prob = actor.sample_action(obs)
+                q_min = torch.min(critic(obs, action).squeeze(), critic2(obs, action).squeeze())
 
                 loss = -(
-                    bound_qvalue(critic(obs, actions_mean))
+                    q_min - alpha * log_prob # bound_qvalue()
                 ).mean() # let's maximize this value (hence the minus sign)
 
                 loss.backward()
@@ -462,9 +475,7 @@ def create_networks(state_space, action_space, env, use_batch_normilization, lay
 def create_networks_with_optuna_trial(optuna_trial, state_space, action_space, env):
     use_batch_normilization = optuna_trial.suggest_categorical("use_batch_normilization", [False]) # True
     layers_critic = optuna_trial.suggest_categorical("layers_critic", [
-        "[300, 400, 300, 400]",
-        # "[300, 400, 400]",
-        # "[300, 400]"
+        "[256, 256]",
     ])
     layers_critic = ast.literal_eval(layers_critic)
 
