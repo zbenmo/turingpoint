@@ -142,3 +142,5 @@ videos/
 
 # Optuna (SQLLITE DB)
 optuna_trials.db
+
+Gymnasium/
