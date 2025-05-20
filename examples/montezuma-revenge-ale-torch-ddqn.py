@@ -175,7 +175,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
 def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
     """Given a model (agent) and a critic. Train the model (and the critic) for 'total_timesteps' steps."""
 
-    rendering_env = gym.make(gym_environment, render_mode="rgb_array_list")
+    rendering_env = make_env(render_mode="rgb_array_list", max_episode_steps=1_000)
 
     actor.eval() # when we'll actually train, we'll say it explicitly below (in learn)
 
@@ -348,15 +348,15 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
         clip = moviepy.ImageSequenceClip([np.uint8(frame) for frame in frames], fps=rendering_env.metadata["render_fps"])
 
         # Add text
-        text = moviepy.TextClip(text=f'After step {parcel["step"]}', font="Lato-Medium.ttf", font_size=24, color='white')
-        text = text.with_duration(clip.duration).with_position(("center", "top"))
+        text = moviepy.TextClip(text=f'After step {parcel["step"]}', font="Lato-Medium.ttf", font_size=14, color='white')
+        text = text.with_duration(clip.duration).with_position(("left", "top"))
 
         # Combine text with the video frames
         final_clip = moviepy.CompositeVideoClip([clip, text])
 
         # Save the output video
         final_clip.write_videofile(
-            videos_path / f"{gym_environment}-DDQN-end-of-step-{parcel['step']}.mp4",
+            videos_path / f"{gym_environment.split('/')[-1]}-DDQN-end-of-step-{parcel['step']}.mp4",
             codec="libx264",
             logger=None
         )
@@ -413,11 +413,11 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
                 per_episode_rewards_collector,
                 take_interesting_info, # those will potentially be also logged.
                 logging,
-                # functools.partial(
-                #     tp_utils.call_every,
-                #     every_x_steps=5000,
-                #     protected=functools.partial(record_video, videos_path=videos_path)
-                # ),
+                functools.partial(
+                    tp_utils.call_every,
+                    every_x_steps=200,
+                    protected=functools.partial(record_video, videos_path=videos_path)
+                ),
                 steps_tracker, # can raise Done
                 advance,
                 reset_if_needed
@@ -445,15 +445,8 @@ def create_network_with_optuna_trial(optuna_trial, state_space, action_space, en
     return create_network(state_space, action_space, env, use_batch_normilization, layers_critic)
 
 
-def optuna_objective(optuna_trial):
-
-    random.seed(1)
-    np.random.seed(1)
-    torch.manual_seed(1)
-
-    gym.register_envs(ale_py)
-
-    env = gym.make(gym_environment, frameskip=1)
+def make_env(**kwargs) -> gym.Env:
+    env = gym.make(gym_environment, frameskip=1, **kwargs)
     env = AtariPreprocessing(
         env,
         noop_max=30,
@@ -466,6 +459,19 @@ def optuna_objective(optuna_trial):
     env = FrameStackObservation(env, stack_size=4)
 
     env.reset(seed=1)
+
+    return env
+
+
+def optuna_objective(optuna_trial):
+
+    random.seed(1)
+    np.random.seed(1)
+    torch.manual_seed(1)
+
+    gym.register_envs(ale_py)
+
+    env = make_env()
 
     # state and obs/observations are used in this example interchangably.
 
@@ -484,14 +490,16 @@ def optuna_objective(optuna_trial):
     if False:
         act.load_state_dict(torch.load(name_of_model_file_act, weights_only=True))
 
-    mean_reward_before_train = evaluate(env, act, 100)
+    episodes_for_evaluation = 10
+
+    mean_reward_before_train = evaluate(env, act, episodes_for_evaluation)
     print("before training")
     print(f'{mean_reward_before_train=}')
 
     total_timesteps = optuna_trial.suggest_categorical("total_timesteps", [1_000]) # 1_000_000
     train(optuna_trial, env, act, total_timesteps=total_timesteps)
 
-    mean_reward_after_train = evaluate(env, act, 100)
+    mean_reward_after_train = evaluate(env, act, episodes_for_evaluation)
     print("after training")
     print(f'{mean_reward_after_train=}')
 
