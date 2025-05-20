@@ -60,6 +60,58 @@ class StateToQValues(nn.Module):
         return self.net(obs)
 
 
+class FixedStateToRandom(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        cnn_layers = []
+        in_channels = 4 # for 4 frames (history)
+        out_size = np.array((84, 84))
+        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [16, 32, 32]):
+            cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
+            cnn_layers.append(nn.ReLU())
+            in_channels = out_channels
+            out_size = (out_size - kernel_size) // stride + 1
+        assert out_channels * out_size.prod() == 1568, f'{out_channels=}, {out_size=}'
+        self.net = nn.Sequential(
+            *cnn_layers,
+            nn.Flatten(),
+            nn.Linear(1568, 128),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs -> random (regression)"""
+        assert obs.ndim == 4, f'{obs.shape=}'
+        # nn.Flatten() from above skips first dim, so if no batch, we fail to flatten all needed.
+
+        return self.net(obs)
+
+
+class StateToRND(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        cnn_layers = []
+        in_channels = 4 # for 4 frames (history)
+        out_size = np.array((84, 84))
+        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [8, 16, 16]):
+            cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
+            cnn_layers.append(nn.ReLU())
+            in_channels = out_channels
+            out_size = (out_size - kernel_size) // stride + 1
+        num_ele = out_channels * out_size.prod()
+        self.net = nn.Sequential(
+            *cnn_layers,
+            nn.Flatten(),
+            nn.Linear(num_ele, 128),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs -> random (regression)"""
+        assert obs.ndim == 4, f'{obs.shape=}'
+        # nn.Flatten() from above skips first dim, so if no batch, we fail to flatten all needed.
+
+        return self.net(obs)
+
+
 def get_action(parcel: Dict, *, agent: StateToQValues, explore=False):
     """'participant' representing the agent. Epsion greedy strategy:
     1 - epsion - take the "best action" - explotation
@@ -117,12 +169,14 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
 
 
-def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
+def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRandom, rnd: StateToRND, total_timesteps):
     """Given a model (agent) and a critic. Train the model (and the critic) for 'total_timesteps' steps."""
 
     rendering_env = make_env(render_mode="rgb_array_list", max_episode_steps=1_000)
 
     actor.eval() # when we'll actually train, we'll say it explicitly below (in learn)
+    fixed_random.eval()
+    rnd.eval()
 
     critic = copy.deepcopy(actor)
 
@@ -151,7 +205,11 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
     optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent) # , weight_decay=5e-6)
     # scheduler_agent = ExponentialLR(optimizer_agent, gamma=0.99)
 
-    max_epsilon = 0.45
+    lr_rnd = optuna_trial.suggest_float("lr_rnd", 1e-4, 1e-4)
+
+    optimizer_rnd = torch.optim.Adam(rnd.parameters(), lr=lr_rnd)
+
+    max_epsilon = 0.80
     min_epsilon = 0.05
 
     def set_epsilon(parcel: dict):
@@ -172,7 +230,7 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
 
     def learn(parcel: dict):
 
-        with tp_torch_utils.start_train(actor), tp_torch_utils.start_train(critic):
+        with tp_torch_utils.start_train(actor), tp_torch_utils.start_train(critic), tp_torch_utils.start_train(rnd):
 
             if parcel['step'] == 0:
                 parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr']
@@ -189,6 +247,8 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
                 update_critic(actor, critic)
 
             losses_agent = []
+            losses_rnd = []
+            reward_intrinsic_lst = []
 
             replay_buffer_dataloader = torch.utils.data.DataLoader(
                 replay_buffer,
@@ -213,9 +273,27 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
                 next_obs = batch['next_obs'].to(torch.float32)
                 terminated = batch['terminated']
 
+                fixed_random_value = fixed_random(next_obs)
+                rnd_values = rnd(next_obs)
+
+                # optimize rnd
+
+                optimizer_rnd.zero_grad()
+
+                loss_rnd = F.mse_loss(rnd_values, fixed_random_value)
+                loss_rnd.backward()
+
+                losses_rnd.append(loss_rnd.item())
+
+                optimizer_rnd.step()
+
                 # calculate the target
 
                 with torch.no_grad():
+                    reward_intrinsic = (rnd_values - fixed_random_value).pow(2.0).sum(-1)
+
+                    reward_intrinsic_lst.append(reward_intrinsic)
+
                     next_obs_q_values = actor(next_obs)
                     _, next_obs_q_value_idx = next_obs_q_values.max(dim=1)
                     next_obs_q_value = torch.gather(
@@ -223,7 +301,7 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
                         dim=1,
                         index=next_obs_q_value_idx.view(-1, 1)
                     ).squeeze()
-                    target = reward + torch.where(terminated, 0, discount * next_obs_q_value)
+                    target = reward + torch.where(terminated, 0, discount * (next_obs_q_value + reward_intrinsic))
 
                 # optimize agent
 
@@ -245,6 +323,8 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
                 #     parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr'] # scheduler.get_last_lr()
 
             parcel['Loss(agent)/train'] = np.mean(losses_agent)
+            parcel['Loss(rnd)/train'] = np.mean(losses_rnd)
+            parcel['reward_intrinsic'] = np.mean(reward_intrinsic_lst)
 
     def advance(parcel: dict):
         parcel['obs'] = parcel.pop('next_obs')
@@ -294,14 +374,14 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
 
         # Add text
         text = moviepy.TextClip(text=f'After step {parcel["step"]}', font="Lato-Medium.ttf", font_size=14, color='white')
-        text = text.with_duration(clip.duration).with_position(("left", "top"))
+        text = text.with_duration(clip.duration).with_position(("left", "bottom"))
 
         # Combine text with the video frames
         final_clip = moviepy.CompositeVideoClip([clip, text])
 
         # Save the output video
         final_clip.write_videofile(
-            videos_path / f"{gym_environment.split('/')[-1]}-DDQN-end-of-step-{parcel['step']}.mp4",
+            videos_path / f"{gym_environment.split('/')[-1]}-DDQN-RND-end-of-step-{parcel['step']}.mp4",
             codec="libx264",
             logger=None
         )
@@ -315,15 +395,17 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
 
     def get_train_participants():
         with (tp_tb_utils.Logging(
-            path=f"runs/{gym_environment}_ddqn_{optuna_trial.datetime_start.strftime('%Y_%B_%d__%H_%M%p')}_study_{optuna_trial.study.study_name}_trial_no_{optuna_trial.number}",
+            path=f"runs/{gym_environment}_ddqn_rnd_{optuna_trial.datetime_start.strftime('%Y_%B_%d__%H_%M%p')}_study_{optuna_trial.study.study_name}_trial_no_{optuna_trial.number}",
             track=[
                 'Mean Rewards/train',
                 'Loss(agent)/train',
+                'Loss(rnd)/train',
                 'lr_agent',
                 'episode_length',
                 'episode_reward',
                 # 'action',
                 'epsilon',
+                'reward_intrinsic',
 
             ]) as logging,
             tp_utils.StepsTracker(total_timesteps=total_timesteps, desc="training steps") as steps_tracker):
@@ -353,9 +435,15 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
     train_assembly.launch()
 
 
-def create_network(state_space, action_space, env, use_batch_normilization) -> StateToQValues:
+def create_network(state_space, action_space, env, use_batch_normilization) -> Tuple[
+        StateToQValues,
+        FixedStateToRandom,
+        StateToRND,
+    ]:
     act = StateToQValues(action_space)
-    return act
+    fixed_random = FixedStateToRandom()
+    rnd = StateToRND()
+    return act, fixed_random, rnd
 
 
 def create_network_with_optuna_trial(optuna_trial, state_space, action_space, env):
@@ -397,7 +485,7 @@ def optuna_objective(optuna_trial):
     state_space = env.observation_space.shape[0]
     action_space = env.action_space.n
 
-    act = create_network_with_optuna_trial(
+    act, fixed_random, rnd = create_network_with_optuna_trial(
         optuna_trial=optuna_trial,
         state_space=state_space,
         action_space=action_space,
@@ -408,6 +496,7 @@ def optuna_objective(optuna_trial):
 
     if False:
         act.load_state_dict(torch.load(name_of_model_file_act, weights_only=True))
+        # TODO: fixed_random, rnd 
 
     episodes_for_evaluation = 10
 
@@ -415,8 +504,8 @@ def optuna_objective(optuna_trial):
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    total_timesteps = optuna_trial.suggest_categorical("total_timesteps", [10_000]) # 1_000_000
-    train(optuna_trial, env, act, total_timesteps=total_timesteps)
+    total_timesteps = optuna_trial.suggest_categorical("total_timesteps", [30_001]) # 1_000_000
+    train(optuna_trial, env, act, fixed_random, rnd, total_timesteps=total_timesteps)
 
     mean_reward_after_train = evaluate(env, act, episodes_for_evaluation)
     print("after training")
@@ -424,6 +513,7 @@ def optuna_objective(optuna_trial):
 
     if True:
         torch.save(act.state_dict(), name_of_model_file_act)
+        # TODO: fixed_random, rnd 
 
     return mean_reward_after_train
 
@@ -437,7 +527,7 @@ def main():
     storage = f'sqlite:///{sqlite_file}'
     optuna_study = optuna.create_study(
         storage=storage,
-        study_name=f'{gym_environment} DDQN - v1',
+        study_name=f'{gym_environment} DDQN - RND - v1',
         direction="maximize",
         load_if_exists=True,
     )
