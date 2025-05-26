@@ -113,6 +113,7 @@ class StateToRND(nn.Module):
         torch.nn.init.orthogonal_(orthogonal.weight, std)
         torch.nn.init.constant_(orthogonal.bias, bias_const)
         self.net = nn.Sequential(
+            nn.BatchNorm2d(num_features=1),
             *cnn_layers,
             nn.Flatten(),
             orthogonal,
