@@ -1,4 +1,5 @@
 import ast
+from collections import deque
 import copy
 import functools
 import itertools
@@ -64,23 +65,30 @@ class FixedStateToRandom(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         cnn_layers = []
-        in_channels = 4 # for 4 frames (history)
+        in_channels = 1 # for 4 frames (history)
         out_size = np.array((84, 84))
-        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [16, 32, 32]):
+        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
             cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
             cnn_layers.append(nn.ReLU())
             in_channels = out_channels
             out_size = (out_size - kernel_size) // stride + 1
-        assert out_channels * out_size.prod() == 1568, f'{out_channels=}, {out_size=}'
+        num_ele = out_channels * out_size.prod()
+        latent_dim = 128
+        std = np.sqrt(2)
+        bias_const = 0.0
+        orthogonal = nn.Linear(num_ele, latent_dim)
+        torch.nn.init.orthogonal_(orthogonal.weight, std)
+        torch.nn.init.constant_(orthogonal.bias, bias_const)
         self.net = nn.Sequential(
             *cnn_layers,
             nn.Flatten(),
-            nn.Linear(1568, 128),
+            orthogonal,
+            nn.ReLU(),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         """obs -> random (regression)"""
-        assert obs.ndim == 4, f'{obs.shape=}'
+        # assert obs.ndim == 4, f'{obs.shape=}'
         # nn.Flatten() from above skips first dim, so if no batch, we fail to flatten all needed.
 
         return self.net(obs)
@@ -90,29 +98,36 @@ class StateToRND(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         cnn_layers = []
-        in_channels = 4 # for 4 frames (history)
+        in_channels = 1 # for 4 frames (history)
         out_size = np.array((84, 84))
-        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [8, 16, 16]):
+        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
             cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
             cnn_layers.append(nn.ReLU())
             in_channels = out_channels
             out_size = (out_size - kernel_size) // stride + 1
         num_ele = out_channels * out_size.prod()
+        latent_dim = 128
+        std = np.sqrt(2)
+        bias_const = 0.0
+        orthogonal = nn.Linear(num_ele, latent_dim)
+        torch.nn.init.orthogonal_(orthogonal.weight, std)
+        torch.nn.init.constant_(orthogonal.bias, bias_const)
         self.net = nn.Sequential(
             *cnn_layers,
             nn.Flatten(),
-            nn.Linear(num_ele, 128),
+            orthogonal,
+            nn.ReLU(),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         """obs -> random (regression)"""
-        assert obs.ndim == 4, f'{obs.shape=}'
+        # assert obs.ndim == 4, f'{obs.shape=}'
         # nn.Flatten() from above skips first dim, so if no batch, we fail to flatten all needed.
 
         return self.net(obs)
 
 
-def get_action(parcel: Dict, *, agent: StateToQValues, explore=False):
+def get_action(parcel: Dict, *, agent: StateToQValues, explore=False, obs_key='obs'):
     """'participant' representing the agent. Epsion greedy strategy:
     1 - epsion - take the "best action" - explotation
     epsilon - take a random action - exploration (can still by chance take the "best action")
@@ -124,10 +139,26 @@ def get_action(parcel: Dict, *, agent: StateToQValues, explore=False):
     if explore and np.random.binomial(1, epsilon) > 0:
         parcel['action'] = np.random.choice(range(agent.out_features))
     else:
-        obs = parcel['obs']
+        obs = parcel[obs_key]
         q_values = agent(torch.tensor(obs).unsqueeze(dim=0))
         _, action = q_values.squeeze().max(dim=0) # or just argmax..
         parcel['action'] = action.item()
+
+
+class FrameStack():
+    def __init__(self, stack_size=4):
+        self.stack_size = stack_size
+        self.frames = deque(maxlen=self.stack_size)
+
+    def __call__(self, parcel: Dict):
+        obs = parcel.get('obs')
+        assert len(obs.shape) == 2
+        self.frames.append(obs)
+        while len(self.frames) < self.stack_size: # This should happen only in the first usage of the instance
+            self.frames.append(obs)
+        frames = np.array(self.frames)
+        assert len(frames.shape) == 3
+        parcel['obs_stacked'] = frames
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -140,7 +171,8 @@ def evaluate(env, agent, num_episodes: int) -> float:
     def get_participants():
         yield functools.partial(tp_gym_utils.call_reset, env=env)
         yield from itertools.cycle([
-                functools.partial(get_action, agent=agent),
+                FrameStack(),
+                functools.partial(get_action, agent=agent, obs_key='obs_stacked'),
                 functools.partial(tp_gym_utils.call_step, env=env),
                 rewards_collector,
                 tp_gym_utils.check_done
@@ -168,6 +200,40 @@ def evaluate(env, agent, num_episodes: int) -> float:
     return total_reward / num_episodes
 
 
+class DataSetFromReplayBuffer():
+    def __init__(self, replay_buffer):
+        self.replay_buffer = replay_buffer
+
+    def __len__(self):
+        return len(self.replay_buffer)
+
+    def __getitem__(self, idx: int) -> Dict:
+        entries_indices = [idx]
+        for _ in range(3):
+            idx -= 1
+            if idx < 0:
+                break
+            entry_there = self.replay_buffer[idx]
+            if entry_there['terminated'] or entry_there['truncated']:
+                break
+            entries_indices.insert(0, idx)
+        while len(entries_indices) < 4:
+            entries_indices.insert(0, entries_indices[0]) # duplicate the latest (as needed)
+        assert len(entries_indices) == 4, f'{entries_indices=}'
+        entry = None
+        obs = []
+        next_obs = []
+        for idx in entries_indices:
+            entry = self.replay_buffer[idx]
+            obs.append(entry['obs'])
+            next_obs.append(entry['next_obs'])
+        assert entry is not None
+        ret = {}
+        ret.update(entry)
+        ret['obs_stacked'] = np.array(obs)
+        ret['next_obs_stacked'] = np.array(next_obs)
+        return ret
+
 
 def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRandom, rnd: StateToRND, total_timesteps):
     """Given a model (agent) and a critic. Train the model (and the critic) for 'total_timesteps' steps."""
@@ -188,7 +254,7 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
         actor_batch_norm_stats = tp_torch_utils.get_parameters_by_name(actor, ["running_"])
         critic_batch_norm_stats = tp_torch_utils.get_parameters_by_name(critic, ["running_"])
 
-    discount = optuna_trial.suggest_float("discount", 0.99, 0.99) # AKA: gamma
+    discount = optuna_trial.suggest_float("discount", 0.95, 0.95) # AKA: gamma
     gradient_steps = optuna_trial.suggest_categorical("gradient_steps", [1])
     batch_size = optuna_trial.suggest_categorical("batch_size", [256])
     learning_starts = optuna_trial.suggest_int("learning_starts", 300, 300) # ? TODO:
@@ -196,7 +262,7 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
     policy_delay = optuna_trial.suggest_categorical("policy_delay", [1])
 
     replay_buffer_collector = tp_utils.ReplayBufferCollector(
-        collect=['obs', 'action', 'reward', 'terminated', 'next_obs'], max_entries=replay_buffer_size)
+        collect=['obs', 'action', 'reward', 'terminated', 'truncated', 'next_obs', 'intrinsic_reward'], max_entries=replay_buffer_size)
 
     per_episode_rewards_collector = tp_utils.Collector(['reward'])
 
@@ -209,7 +275,7 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
 
     optimizer_rnd = torch.optim.Adam(rnd.parameters(), lr=lr_rnd)
 
-    max_epsilon = 0.80
+    max_epsilon = 0.40
     min_epsilon = 0.05
 
     def set_epsilon(parcel: dict):
@@ -227,6 +293,13 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
         if use_batch_normilization:
             # Copy running stats, see GH issue #996 (took it from https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/td3/td3.py)
             tp_torch_utils.polyak_update(actor_batch_norm_stats, critic_batch_norm_stats, 1.0)
+
+    def calc_intrinsic_reward(parcel: dict):
+        next_obs = torch.tensor(parcel['next_obs']).unsqueeze(0).unsqueeze(0)
+        fixed_random_value = fixed_random(next_obs).squeeze()
+        rnd_values = rnd(next_obs).squeeze()
+        intrinsic_reward = F.mse_loss(rnd_values, fixed_random_value, reduction="none").mean()
+        parcel['intrinsic_reward'] = intrinsic_reward
 
     def learn(parcel: dict):
 
@@ -250,11 +323,13 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
             losses_rnd = []
             reward_intrinsic_lst = []
 
+            ds = DataSetFromReplayBuffer(replay_buffer) 
+
             replay_buffer_dataloader = torch.utils.data.DataLoader(
-                replay_buffer,
+                ds,
                 batch_size=batch_size,
                 sampler=torch.utils.data.RandomSampler(
-                    data_source=replay_buffer,
+                    data_source=ds,
                     replacement=True, # to make stuff faster
                     num_samples=gradient_steps * batch_size
                 )
@@ -267,11 +342,13 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
 
                 # Now learn from the batch
 
-                obs = batch['obs'].to(torch.float32)
+                obs_stacked = batch['obs_stacked'].to(torch.float32)
+                next_obs_stacked = batch['next_obs_stacked'].to(torch.float32)
                 action = batch['action']
                 reward = batch['reward'].to(torch.float32)
-                next_obs = batch['next_obs'].to(torch.float32)
+                next_obs = batch['next_obs'].to(torch.float32).unsqueeze(1)
                 terminated = batch['terminated']
+                intrinsic_reward = batch['intrinsic_reward']
 
                 fixed_random_value = fixed_random(next_obs)
                 rnd_values = rnd(next_obs)
@@ -290,24 +367,22 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
                 # calculate the target
 
                 with torch.no_grad():
-                    reward_intrinsic = (rnd_values - fixed_random_value).pow(2.0).sum(-1)
+                    reward_intrinsic_lst.extend(intrinsic_reward.tolist())
 
-                    reward_intrinsic_lst.append(reward_intrinsic)
-
-                    next_obs_q_values = actor(next_obs)
+                    next_obs_q_values = actor(next_obs_stacked)
                     _, next_obs_q_value_idx = next_obs_q_values.max(dim=1)
                     next_obs_q_value = torch.gather(
-                        critic(next_obs),
+                        critic(next_obs_stacked),
                         dim=1,
                         index=next_obs_q_value_idx.view(-1, 1)
                     ).squeeze()
-                    target = reward + torch.where(terminated, 0, discount * (next_obs_q_value + reward_intrinsic))
+                    target = reward + torch.where(terminated, 0, discount * (next_obs_q_value + intrinsic_reward))
 
                 # optimize agent
 
                 optimizer_agent.zero_grad()
 
-                q_value = torch.gather(actor(obs), dim=1, index=action.view(-1, 1)).squeeze()
+                q_value = torch.gather(actor(obs_stacked), dim=1, index=action.view(-1, 1)).squeeze()
 
                 loss = F.mse_loss(q_value, target)
                 loss.backward()
@@ -359,7 +434,8 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
         def get_one_episode_participants():
             yield functools.partial(tp_gym_utils.call_reset, env=rendering_env)
             yield from itertools.cycle([
-                functools.partial(get_action, agent=actor),
+                FrameStack(),
+                functools.partial(get_action, agent=actor, obs_key='obs_stacked'),
                 functools.partial(tp_gym_utils.call_step, env=rendering_env),
                 tp_gym_utils.check_done,
             ])
@@ -414,8 +490,10 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
                 set_epsilon,
-                functools.partial(get_action, agent=actor, explore=True),
+                FrameStack(),
+                functools.partial(get_action, agent=actor, explore=True, obs_key='obs_stacked'),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
+                calc_intrinsic_reward,
                 replay_buffer_collector,
                 learn,
                 per_episode_rewards_collector,
@@ -457,13 +535,13 @@ def make_env(**kwargs) -> gym.Env:
     env = AtariPreprocessing(
         env,
         noop_max=30,
-        frame_skip=3, # 3 + 1 = 4 ?
+        frame_skip=4,
         screen_size=84,
         terminal_on_life_loss=False,
         grayscale_obs=True,
         scale_obs=True,
     )
-    env = FrameStackObservation(env, stack_size=4)
+    # env = FrameStackObservation(env, stack_size=4)
 
     return env
 

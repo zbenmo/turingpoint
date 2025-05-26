@@ -231,7 +231,7 @@ def main():
     env = AtariPreprocessing(
         env,
         noop_max=30,
-        frame_skip=3, # 3 + 1 = 4 ?
+        frame_skip=4,
         screen_size=84,
         terminal_on_life_loss=False,
         grayscale_obs=True,

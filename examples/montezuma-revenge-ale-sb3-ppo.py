@@ -9,6 +9,8 @@ import gymnasium as gym
 from gymnasium.wrappers import FrameStackObservation
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 import torch
+from torch import nn
+from torch.nn import functional as F
 from tqdm import trange
 
 import turingpoint.gymnasium_utils as tp_gym_utils
@@ -25,7 +27,7 @@ def make_env(**kwargs) -> gym.Env:
     env = AtariPreprocessing(
         env,
         noop_max=30,
-        frame_skip=3, # 3 + 1 = 4 ?
+        frame_skip=4,
         screen_size=84,
         terminal_on_life_loss=False,
         grayscale_obs=True,
@@ -78,7 +80,7 @@ def main():
 
   env.reset(seed=1)
 
-  agent = PPO(CnnPolicy, env, verbose=0) # use verbose=1 for debugging
+  agent = PPO(CnnPolicy, env, verbose=0, gamma=0.95) # use verbose=1 for debugging
 
   episodes_for_evaluation = 10
 
