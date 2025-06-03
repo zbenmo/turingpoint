@@ -167,7 +167,7 @@ def train(env, agent, critic, total_timesteps):
 				probs, *_ = zip(*((e['prob'], ) for e in episode))
 				probs_batch.extend(probs)
 
-			log_probs_batch_tensor = torch.stack(probs_batch, dim=0).log()
+			log_probs_batch_tensor = torch.tensor(probs_batch).log()
 
 			advantage_tensor = rewards_tensor - critic(obs_tensor).squeeze()
 
