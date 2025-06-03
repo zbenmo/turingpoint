@@ -1,6 +1,7 @@
 from pprint import pprint
 from typing import Generator, List, Sequence
 from tqdm import tqdm
+import numpy as np
 
 from turingpoint.definitions import Participant, Done
 
@@ -95,3 +96,36 @@ class ReplayBufferCollector:
             k: parcel[k] for k in self.collect
         })
         del self.replay_buffer[0:-self.max_entries]
+
+
+# Taken from CoPilot 
+def compute_gae(rewards, values, gamma=0.99, lambda_=0.95):
+    """
+    Compute Generalized Advantage Estimation (GAE).
+    
+    Args:
+        rewards (np.array): Rewards from the environment.
+        values (np.array): Value function estimates.
+        gamma (float): Discount factor.
+        lambda_ (float): GAE coefficient.
+
+    Returns:
+        np.array: Computed advantage estimates.
+    """
+    advantages = np.zeros_like(rewards)
+    last_advantage = 0
+    
+    for t in reversed(range(len(rewards))):
+        delta = rewards[t] + gamma * values[t + 1] - values[t]
+        advantages[t] = delta + gamma * lambda_ * last_advantage
+        last_advantage = advantages[t]
+    
+    return advantages
+
+# # Example usage:
+# rewards = np.array([1, 2, 3, 4, 5])
+# values = np.array([0.5, 1.5, 2.5, 3.5, 4.5, 5])  # Last value is estimated for bootstrapping
+# gamma = 0.99
+# lambda_ = 0.95
+
+# advantages = compute_gae(rewards, values, gamma, lambda_)

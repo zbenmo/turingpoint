@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from itertools import zip_longest
 from typing import Iterable
+import numpy as np
 import torch
 from torch import nn
 
@@ -73,3 +74,10 @@ def start_train(model: nn.Module):
         yield model
     finally:
         model.eval()
+
+
+# copying stuff from https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo.py
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
