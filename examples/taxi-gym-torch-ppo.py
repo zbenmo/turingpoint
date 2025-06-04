@@ -124,14 +124,24 @@ def collect_episodes(env, agent, num_episodes=40) -> List[List[Dict]]:
 	return episodes
 
 
+# as Copilot tells me
+# def compute_entropy(probs):
+#     """Calculate entropy from action probabilities."""
+#     return -torch.sum(probs * torch.log(probs + 1e-8), dim=-1).mean()
+def compute_entropy(log_probs):
+    """Calculate entropy from action probabilities."""
+    return -torch.sum(log_probs.exp() * log_probs, dim=-1).mean()
+
+
 def train(optuna_trial, env, agent, critic, total_timesteps):
-	causality_to_be_accounted_for = True
+	# causality_to_be_accounted_for = True
 	normilize_the_rewards = True
 	discount = optuna_trial.suggest_float('discount', 0.99, 0.99) # gamma
 	gae = optuna_trial.suggest_float('gae_lambda', 0.95, 0.95) # lambda
-	clip_coef = optuna_trial.suggest_float('clip_coef', 0.2, 0.2)
-	actor_lr = optuna_trial.suggest_float('actor_lr', 1e-4, 1e-4)
-	critic_lr = optuna_trial.suggest_float('critic_lr', 1e-4, 1e-4)
+	clip_coef = optuna_trial.suggest_float('clip_coef', 0.3, 0.3)
+	actor_lr = optuna_trial.suggest_float('actor_lr', 8e-5, 8e-5)
+	critic_lr = optuna_trial.suggest_float('critic_lr', 8e-5, 8e-5)
+	entropy_coeff = optuna_trial.suggest_float('entropy_coeff', 3e-1, 3e-1)
 		
 	optimizer = torch.optim.Adam(agent.parameters(), lr=actor_lr)
 
@@ -208,7 +218,14 @@ def train(optuna_trial, env, agent, critic, total_timesteps):
 					loss1 = ratio * adv
 					loss2 = torch.clip(ratio, 1. - clip_coef, 1. + clip_coef) * adv
 
+					# Entropy bonus to encourage exploration
+					# Log probabilities of all actions
+					log_probs_all = torch.nn.functional.log_softmax(logits, dim=-1)					
+					entropy_loss = compute_entropy(log_probs_all)
+
 					loss = -torch.min(loss1, loss2).mean() # we want to maximize
+
+					loss = loss - entropy_coeff * entropy_loss
 
 					loss.backward()
 
@@ -256,7 +273,7 @@ def optuna_objective(optuna_trial):
 	print("before training")
 	print(f'{mean_reward_before_train=}')
 
-	train(optuna_trial, env, agent, critic, total_timesteps=400_000)
+	train(optuna_trial, env, agent, critic, total_timesteps=1_000_000)
 
 	mean_reward_after_train = evaluate(env, agent, 100)
 	print("after training")
