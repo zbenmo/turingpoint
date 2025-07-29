@@ -15,6 +15,7 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import ExponentialLR
 from tqdm import trange
 import optuna
+from contextlib import ExitStack
 
 import turingpoint.gymnasium_utils as tp_gym_utils
 import turingpoint.utils as tp_utils
@@ -24,6 +25,8 @@ import turingpoint as tp
 
 
 gym_environment = 'Humanoid-v5'
+
+taus = torch.linspace(0, 1, 25 + 2)[1:-1] # 25 values
 
 
 class StateToAction(nn.Module):
@@ -146,7 +149,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
 
 
 def quantile_loss(preds, target, taus):
-    errors = target - preds  # shape: [batch_size, num_quantiles]
+    errors = target.unsqueeze(1) - preds  # shape: [batch_size, num_quantiles]
     loss = torch.maximum(
         taus * errors,
         (taus - 1) * errors
@@ -227,9 +230,13 @@ def train(optuna_trial, env, actor: StateToAction, critics: List[StateActionToQV
     def learn(parcel: dict):
 
         def bound_qvalue(q_value: 'torch.Tensor') -> 'torch.Tensor':
-            return q_value.clamp(-5e3, 5e3) # just as got very extreme values without this
+            return q_value
+            # TODO: ?
+            # return q_value.clamp(-5e3, 5e3) # just as got very extreme values without this
 
-        with tp_torch_utils.start_train(actor), tp_torch_utils.start_train(critic), tp_torch_utils.start_train(critic2):
+        with tp_torch_utils.start_train(actor), ExitStack() as stack:
+            for critic in critics:
+                stack.enter_context(tp_torch_utils.start_train(critic))
 
             if parcel['step'] == 0:
                 parcel['lr_agent'] = optimizer_agent.param_groups[0]['lr']
@@ -285,7 +292,7 @@ def train(optuna_trial, env, actor: StateToAction, critics: List[StateActionToQV
                     # next_obs_q_values2 = target_critic2(next_obs, next_actions).squeeze()
                     # q_min = torch.min(next_obs_q_values, next_obs_q_values2)
 
-                    q_calc = quantiles.sort(dim=1)[0].mean(dim=1)
+                    q_calc = quantiles.sort(dim=1)[0][:, -10:].mean(dim=1)
 
                     target = bound_qvalue(reward + torch.where(terminated, 0, discount * q_calc))
 
@@ -295,9 +302,15 @@ def train(optuna_trial, env, actor: StateToAction, critics: List[StateActionToQV
 
                     optimizer_critic.zero_grad()
 
-                    q_value = bound_qvalue(critic(obs, action)).squeeze()
+                    pred = bound_qvalue(critic(obs, action))
 
-                    loss = F.mse_loss(q_value, target)
+                    # print(f'{pred.shape=}')
+                    # print(f'{target.shape=}')
+
+                    # loss = F.mse_loss(q_value, target)
+
+                    loss = quantile_loss(pred, target, taus)
+
                     loss.backward()
 
                     losses_critic.append(loss.item())
@@ -309,7 +322,7 @@ def train(optuna_trial, env, actor: StateToAction, critics: List[StateActionToQV
                 optimizer_agent.zero_grad()
 
                 loss = -(
-                    bound_qvalue(critic(obs, actor(obs)))
+                    bound_qvalue(critics[0](obs, actor(obs)))
                 ).mean() # let's maximize this value (hence the minus sign)
 
                 loss.backward()
@@ -385,7 +398,7 @@ def train(optuna_trial, env, actor: StateToAction, critics: List[StateActionToQV
 
         # Save the output video
         final_clip.write_videofile(
-            videos_path / f"Humanoid-v5-TD3-end-of-step-{parcel['step']}.mp4",
+            videos_path / f"Humanoid-v5-TQC-end-of-step-{parcel['step']}.mp4",
             codec="libx264",
             logger=None
         )
@@ -472,6 +485,7 @@ def create_networks(state_space, action_space, env, use_batch_normilization, lay
         StateActionToQValueQuantiles(
             state_space,
             action_space,
+            quantiles=taus,
             use_batch_normilization=use_batch_normilization,
             layers_critic=layers_critic
         ) # This is the Q value
