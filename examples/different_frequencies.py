@@ -30,6 +30,11 @@ def different_frequencies():
 
   print(f'{parcel=}')
 
+  for participant in [participant1, participant2, participant3]:
+    print(participant)
+    print(f'{participant.times_called=}')
+    print(f'{participant.ns_elapsed=}')
+
 
 if __name__ == "__main__":
   different_frequencies()
