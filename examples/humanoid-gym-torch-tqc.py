@@ -178,13 +178,29 @@ def evaluate(env, agent, num_episodes: int) -> float:
     return total_reward / num_episodes
 
 
-def quantile_loss(preds, target, taus):
+# def quantile_loss(preds, target, taus):
+#     errors = target.unsqueeze(1) - preds  # shape: [batch_size, num_quantiles]
+#     loss = torch.maximum(
+#         taus * errors,
+#         (taus - 1) * errors
+#     )
+#     return loss.mean()
+
+
+def quantile_huber_loss(preds, target, taus, delta=1.0):
     errors = target.unsqueeze(1) - preds  # shape: [batch_size, num_quantiles]
-    loss = torch.maximum(
-        taus * errors,
-        (taus - 1) * errors
+    
+    # Apply Huber loss
+    huber_loss = torch.where(
+        errors.abs() <= delta,
+        0.5 * errors ** 2,
+        delta * (errors.abs() - 0.5 * delta)
     )
-    return loss.mean()
+
+    # Apply quantile weights
+    quantile_loss = torch.abs(taus - (errors < 0).float()) * huber_loss
+
+    return quantile_loss.mean()
 
 
 def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: List[StateActionToQValueQuantiles], total_timesteps):
@@ -285,6 +301,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
             losses_agent = []
             losses_critic = []
+            targets = []
 
             replay_buffer_dataloader = torch.utils.data.DataLoader(
                 replay_buffer,
@@ -322,11 +339,13 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                     # next_obs_q_values2 = target_critic2(next_obs, next_actions).squeeze()
                     # q_min = torch.min(next_obs_q_values, next_obs_q_values2)
 
-                    q_calc = quantiles.sort(dim=1)[0][:, -10:].mean(dim=1)
+                    q_calc = quantiles.sort(dim=1)[0][:, :-10].mean(dim=1) # 10 = 2 * 5
 
                     target = bound_qvalue(reward + torch.where(terminated, 0, discount * (q_calc - alpha * next_actions_log_prob)))
 
-                # optimize critic
+                    targets.append(target)
+
+                # optimize critics
 
                 for optimizer_critic, critic in zip(optimizer_critics, critics):
 
@@ -334,7 +353,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                     pred = bound_qvalue(critic(obs, action))
 
-                    loss = quantile_loss(pred, target, taus)
+                    loss = quantile_huber_loss(pred, target, taus)
 
                     loss.backward()
 
@@ -369,6 +388,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
             parcel['Loss(agent)/train'] = np.mean(losses_agent)
             parcel['Loss(critic)/train'] = np.mean(losses_critic)
+            parcel['target/train'] = np.mean(targets)
 
     def advance(parcel: dict):
         parcel['obs'] = parcel.pop('next_obs')
@@ -451,6 +471,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 'lr_agent',
                 'episode_length',
                 'episode_reward',
+                'target/train',
                 # 'action',
                 # 'noise',
 
