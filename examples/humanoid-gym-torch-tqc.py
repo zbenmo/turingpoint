@@ -593,7 +593,7 @@ def optuna_objective(optuna_trial):
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    total_timesteps = optuna_trial.suggest_int("total_timesteps", 100_000, 100_000) # 1_000_000, 1_000_000
+    total_timesteps = optuna_trial.suggest_int("total_timesteps", 1_000_000, 1_000_000)
     train(optuna_trial, env, act, critics, total_timesteps=total_timesteps)
 
     mean_reward_after_train = evaluate(env, act, 100)
