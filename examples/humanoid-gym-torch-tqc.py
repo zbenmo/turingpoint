@@ -273,9 +273,10 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             # TODO:
             tp_torch_utils.polyak_update(actor_batch_norm_stats, actor_batch_norm_stats_target, 1.0)
 
-    def learn(parcel: dict):
+    alpha = torch.nn.Parameter(torch.tensor(0.1), requires_grad=True)
+    optimizer_alpha = torch.optim.Adam([alpha], lr=1e-3)
 
-        alpha = 0.1
+    def learn(parcel: dict):
 
         def bound_qvalue(q_value: 'torch.Tensor') -> 'torch.Tensor':
             return q_value.clamp(-5e3, 5e3) # just as got very extreme values without this
@@ -302,6 +303,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             losses_agent = []
             losses_critic = []
             targets = []
+            alphas = []
 
             replay_buffer_dataloader = torch.utils.data.DataLoader(
                 replay_buffer,
@@ -319,6 +321,8 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                     continue
 
                 # Now learn from the batch
+
+                alphas.append(alpha.item())
 
                 obs = batch['obs'].to(torch.float32)
                 action = batch['action']
@@ -380,6 +384,20 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                 losses_agent.append(loss.item())
 
+                # optimize alpha
+
+                optimizer_alpha.zero_grad()
+
+                with torch.no_grad():
+                    target_entropy = -17 # -dim Action space
+                    multiply = -log_prob - target_entropy
+
+                loss = (alpha.log() * multiply).mean()
+
+                loss.backward()
+
+                optimizer_alpha.step()
+
                 # if parcel['step'] % 40_000 == 0:
                 #     scheduler_critic.step()
                 #     scheduler_agent.step()
@@ -389,6 +407,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             parcel['Loss(agent)/train'] = np.mean(losses_agent)
             parcel['Loss(critic)/train'] = np.mean(losses_critic)
             parcel['target/train'] = np.mean(targets)
+            parcel['alpha/train'] = np.mean(alphas)
 
     def advance(parcel: dict):
         parcel['obs'] = parcel.pop('next_obs')
@@ -472,6 +491,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 'episode_length',
                 'episode_reward',
                 'target/train',
+                'alpha/train',
                 # 'action',
                 # 'noise',
 
