@@ -206,7 +206,7 @@ def quantile_huber_loss(preds, target, taus, delta=1.0):
 def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: List[StateActionToQValueQuantiles], total_timesteps):
     """Given a model (agent) and a critic. Train the model (and the critic) for 'total_timesteps' steps."""
 
-    rendering_env = gym.make(gym_environment, render_mode="rgb_array_list")
+    rendering_env = gym.make(gym_environment, render_mode="rgb_array_list", max_episode_steps=200)
 
     actor.eval() # when we'll actually train, we'll say it explicitly below (in learn)
     for critic in critics:
@@ -231,7 +231,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
         # critic2_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic2, ["running_"])
         # TODO:
 
-    discount = optuna_trial.suggest_float("discount", 0.99, 0.99) # AKA: gamma
+    discount = optuna_trial.suggest_float("discount", 0.97, 0.97) # AKA: gamma
     gradient_steps = optuna_trial.suggest_int("gradient_steps", 1, 1)
     batch_size = optuna_trial.suggest_int("batch_size", 256, 256)
     learning_starts = optuna_trial.suggest_int("learning_starts", 25_000, 25_000)
@@ -244,7 +244,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
     per_episode_rewards_collector = tp_utils.Collector(['reward'])
 
-    lr_agent = optuna_trial.suggest_float("lr_agent", 3e-4, 3e-4)
+    lr_agent = optuna_trial.suggest_float("lr_agent", 3e-5, 3e-5)
     lr_critic = optuna_trial.suggest_float("lr_critic", 3e-4, 3e-4)
 
     optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent) # , weight_decay=5e-6)
@@ -273,8 +273,8 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             # TODO:
             tp_torch_utils.polyak_update(actor_batch_norm_stats, actor_batch_norm_stats_target, 1.0)
 
-    alpha = torch.nn.Parameter(torch.tensor(0.1), requires_grad=True)
-    optimizer_alpha = torch.optim.Adam([alpha], lr=1e-3)
+    log_alpha = torch.nn.Parameter(torch.tensor(0.1).log(), requires_grad=True)
+    optimizer_alpha = torch.optim.Adam([log_alpha], lr=1e-3)
 
     def learn(parcel: dict):
 
@@ -304,6 +304,8 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             losses_critic = []
             targets = []
             alphas = []
+            entropy_losses = []
+            log_probs = []
 
             replay_buffer_dataloader = torch.utils.data.DataLoader(
                 replay_buffer,
@@ -319,6 +321,9 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                 if len(batch['obs']) < 2:
                     continue
+
+                with torch.no_grad():
+                    alpha = log_alpha.exp() # .clip(0.4, 1.6) # 0.1 # 
 
                 # Now learn from the batch
 
@@ -371,9 +376,15 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                 action, log_prob = actor.sample_action(obs)
 
+                log_probs.append(log_prob.detach().numpy())
+
+                entropy_loss = alpha * log_prob.unsqueeze(1)
+
+                entropy_losses.append(entropy_loss.detach().numpy())
+
                 loss = -(
                     torch.concat([
-                        bound_qvalue(critic(obs, action)) - alpha * log_prob.unsqueeze(1)
+                        bound_qvalue(critic(obs, action)) - entropy_loss
                         for critic in critics
                     ])
                 ).mean() # let's maximize this value (hence the minus sign)
@@ -392,7 +403,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                     target_entropy = -17 # -dim Action space
                     multiply = -log_prob - target_entropy
 
-                loss = (alpha.log() * multiply).mean()
+                loss = (log_alpha * multiply).mean()
 
                 loss.backward()
 
@@ -408,6 +419,8 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             parcel['Loss(critic)/train'] = np.mean(losses_critic)
             parcel['target/train'] = np.mean(targets)
             parcel['alpha/train'] = np.mean(alphas)
+            parcel['log_prob/train'] = np.mean(log_probs)
+            parcel['entropy_loss/train'] = np.mean(entropy_losses)
 
     def advance(parcel: dict):
         parcel['obs'] = parcel.pop('next_obs')
@@ -492,6 +505,8 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 'episode_reward',
                 'target/train',
                 'alpha/train',
+                'log_prob/train',
+                'entropy_loss/train',
                 # 'action',
                 # 'noise',
 
