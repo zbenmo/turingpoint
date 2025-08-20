@@ -26,7 +26,7 @@ import turingpoint as tp
 
 gym_environment = 'HumanoidStandup-v5'
 
-taus = torch.linspace(0, 1, 25 + 2)[1:-1] # 25 values
+taus = torch.linspace(0, 1, 25 + 2)[1:-1] # 25 values (what quantiles to take)
 
 
 class StateToActionDistributionParams(nn.Module):
@@ -130,14 +130,6 @@ def get_action(parcel: Dict, *, agent: StateToActionDistributionParams): # , exp
     action, _ = agent.sample_action(torch.tensor(obs, dtype=torch.float32).unsqueeze(0)) # , actions_mean
     parcel['action'] = action.squeeze(0).detach().numpy() # .item()
 
-# def penalize_two_feet_in_the_air(parcel: Dict, *, env):
-#     humanoid_env = env.unwrapped
-
-#     left_foot_z = humanoid_env.get_body_com("left_foot")[2]   # Index 2 corresponds to the z-axis
-#     right_foot_z = humanoid_env.get_body_com("right_foot")[2]
-
-#     parcel['reward'] = parcel['reward'] - 0.1 * min(left_foot_z, right_foot_z) # want to penalize when the two feet are in the air.
-
 
 def evaluate(env, agent, num_episodes: int) -> float:
     """Collect episodes and calculate the mean total reward."""
@@ -151,7 +143,6 @@ def evaluate(env, agent, num_episodes: int) -> float:
         yield from itertools.cycle([
                 functools.partial(get_action, agent=agent),
                 functools.partial(tp_gym_utils.call_step, env=env),
-                # functools.partial(penalize_two_feet_in_the_air, env=env), 
                 rewards_collector,
                 tp_gym_utils.check_done
         ])
@@ -162,10 +153,9 @@ def evaluate(env, agent, num_episodes: int) -> float:
         _ = evaluate_assembly.launch()
         # Note that we don't clear the rewards in 'rewards_collector', and so we continue to collect.
 
-    total_reward = sum(x['reward'] for x in rewards_collector.get_entries())
-    count = sum(1 for _ in rewards_collector.get_entries())
-
     rewards = [x['reward'] for x in rewards_collector.get_entries()]
+    count = len(rewards)
+    total_reward = sum(rewards)
 
     print(f'{np.mean(rewards)=}')
     print(f'{np.max(rewards)=}')
@@ -231,7 +221,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
         # critic2_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic2, ["running_"])
         # TODO:
 
-    discount = optuna_trial.suggest_float("discount", 0.97, 0.97) # AKA: gamma
+    discount = optuna_trial.suggest_float("discount", 0.99, 0.99) # AKA: gamma
     gradient_steps = optuna_trial.suggest_int("gradient_steps", 1, 1)
     batch_size = optuna_trial.suggest_int("batch_size", 256, 256)
     learning_starts = optuna_trial.suggest_int("learning_starts", 25_000, 25_000)
@@ -276,6 +266,16 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
     log_alpha = torch.nn.Parameter(torch.tensor(0.1).log(), requires_grad=True)
     optimizer_alpha = torch.optim.Adam([log_alpha], lr=1e-3)
 
+    # def set_parameters(parcel: dict):
+    #     step = parcel.get('step', 0)
+    #     if step < 100_000:
+    #         target_entropy = -30
+    #     elif step < 200_000:
+    #         target_entropy = -15
+    #     else:
+    #         target_entropy = -10
+    #     parcel['target_entropy'] = target_entropy
+
     def learn(parcel: dict):
 
         def bound_qvalue(q_value: 'torch.Tensor') -> 'torch.Tensor':
@@ -296,6 +296,10 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
             if parcel['step'] < learning_starts: # we'll start really learning only after we collect some steps
                 return
+            
+            if parcel['step'] == learning_starts:
+                mean_rewards = np.mean([x['reward'] for x in replay_buffer])
+                parcel['mean_reward'] = mean_rewards
 
             if parcel['step'] % policy_delay == 0:
                 update_target(target_actor, target_critics, actor, critics)
@@ -331,7 +335,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                 obs = batch['obs'].to(torch.float32)
                 action = batch['action']
-                reward = batch['reward'].to(torch.float32)
+                reward = (batch['reward'] / parcel['mean_reward']).to(torch.float32)
                 next_obs = batch['next_obs'].to(torch.float32)
                 terminated = batch['terminated']
 
@@ -378,15 +382,18 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                 log_probs.append(log_prob.detach().numpy())
 
-                entropy_loss = alpha * log_prob.unsqueeze(1)
+                entropy_loss = alpha * log_prob
 
                 entropy_losses.append(entropy_loss.detach().numpy())
 
+                critics_values = [
+                    bound_qvalue(critic(obs, action))
+                    for critic in critics
+                ]
+
                 loss = -(
-                    torch.concat([
-                        bound_qvalue(critic(obs, action)) - entropy_loss
-                        for critic in critics
-                    ])
+                    torch.concat(critics_values, dim=1).mean(dim=1)
+                    - entropy_loss
                 ).mean() # let's maximize this value (hence the minus sign)
 
                 loss.backward()
@@ -400,7 +407,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 optimizer_alpha.zero_grad()
 
                 with torch.no_grad():
-                    target_entropy = -17 # -dim Action space
+                    target_entropy = -17 # parcel['target_entropy'] # -17 # -dim Action space
                     multiply = -log_prob - target_entropy
 
                 loss = (log_alpha * multiply).mean()
@@ -507,10 +514,10 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 'alpha/train',
                 'log_prob/train',
                 'entropy_loss/train',
+                'target_entropy',
                 # 'action',
                 # 'noise',
 
-                'distance_from_origin',
                 # {
                 #     'main_tag': 'reward',
                 #     'elements': [
@@ -521,12 +528,6 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 #         'reward',
                 #     ]
                 # },
-                # 'tendon_length',
-                # 'tendon_velocity',
-                # 'x_position',
-                # 'x_velocity',
-                # 'y_position',
-                # 'y_velocity',
 
             ]) as logging,
             tp_utils.StepsTracker(total_timesteps=total_timesteps, desc="training steps") as steps_tracker):
@@ -534,10 +535,9 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             yield functools.partial(tp_gym_utils.call_reset, env=env)
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
-                # set_epsilon,
+                # set_parameters,
                 functools.partial(get_action, agent=actor), # , noise_level=noise_level),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
-                # functools.partial(penalize_two_feet_in_the_air, env=env), 
                 replay_buffer_collector,
                 learn,
                 per_episode_rewards_collector,
