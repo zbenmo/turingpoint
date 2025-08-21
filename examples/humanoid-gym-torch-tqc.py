@@ -371,11 +371,16 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                 action, log_prob = actor.sample_action(obs)
 
+                entropy_loss = alpha * log_prob
+
+                critics_values = [
+                    bound_qvalue(critic(obs, action))
+                    for critic in critics
+                ]
+
                 loss = -(
-                    torch.concat([
-                        bound_qvalue(critic(obs, action)) - alpha * log_prob.unsqueeze(1)
-                        for critic in critics
-                    ])
+                    torch.concat(critics_values, dim=1).mean(dim=1)
+                    - entropy_loss
                 ).mean() # let's maximize this value (hence the minus sign)
 
                 loss.backward()

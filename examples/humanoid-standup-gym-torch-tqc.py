@@ -266,15 +266,15 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
     log_alpha = torch.nn.Parameter(torch.tensor(0.1).log(), requires_grad=True)
     optimizer_alpha = torch.optim.Adam([log_alpha], lr=1e-3)
 
-    # def set_parameters(parcel: dict):
-    #     step = parcel.get('step', 0)
-    #     if step < 100_000:
-    #         target_entropy = -30
-    #     elif step < 200_000:
-    #         target_entropy = -15
-    #     else:
-    #         target_entropy = -10
-    #     parcel['target_entropy'] = target_entropy
+    def set_parameters(parcel: dict):
+        step = parcel.get('step', 0)
+        if step < 100_000:
+            target_entropy = -30
+        elif step < 200_000:
+            target_entropy = -15
+        else:
+            target_entropy = -10
+        parcel['target_entropy'] = target_entropy
 
     def learn(parcel: dict):
 
@@ -407,7 +407,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 optimizer_alpha.zero_grad()
 
                 with torch.no_grad():
-                    target_entropy = -17 # parcel['target_entropy'] # -17 # -dim Action space
+                    target_entropy = parcel['target_entropy'] # -17 # -dim Action space
                     multiply = -log_prob - target_entropy
 
                 loss = (log_alpha * multiply).mean()
@@ -535,7 +535,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             yield functools.partial(tp_gym_utils.call_reset, env=env)
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
-                # set_parameters,
+                set_parameters,
                 functools.partial(get_action, agent=actor), # , noise_level=noise_level),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
                 replay_buffer_collector,
