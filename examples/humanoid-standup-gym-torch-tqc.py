@@ -213,11 +213,13 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
     if use_batch_normilization:
         actor_batch_norm_stats = tp_torch_utils.get_parameters_by_name(actor, ["running_"])
-        # critic_batch_norm_stats = tp_torch_utils.get_parameters_by_name(critic, ["running_"])
+        for critic in critics:
+            critic_batch_norm_stats = tp_torch_utils.get_parameters_by_name(critic, ["running_"])
         # critic2_batch_norm_stats = tp_torch_utils.get_parameters_by_name(critic2, ["running_"])
         # TODO:
         actor_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_actor, ["running_"])
-        # critic_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic, ["running_"])
+        for target_critic in target_critics:
+            critic_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic, ["running_"])
         # critic2_batch_norm_stats_target = tp_torch_utils.get_parameters_by_name(target_critic2, ["running_"])
         # TODO:
 
@@ -234,7 +236,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
     per_episode_rewards_collector = tp_utils.Collector(['reward'])
 
-    lr_agent = optuna_trial.suggest_float("lr_agent", 3e-5, 3e-5)
+    lr_agent = optuna_trial.suggest_float("lr_agent", 3e-4, 3e-4)
     lr_critic = optuna_trial.suggest_float("lr_critic", 3e-4, 3e-4)
 
     optimizer_agent = torch.optim.Adam(actor.parameters(), lr=lr_agent) # , weight_decay=5e-6)
@@ -258,23 +260,24 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             tp_torch_utils.polyak_update(critic.parameters(), target_critic.parameters(), tau) # critic -> target_critic
         if use_batch_normilization:
             # Copy running stats, see GH issue #996 (took it from https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/td3/td3.py)
+            # for ...
             # tp_torch_utils.polyak_update(critic_batch_norm_stats, critic_batch_norm_stats_target, 1.0)
             # tp_torch_utils.polyak_update(critic2_batch_norm_stats, critic2_batch_norm_stats_target, 1.0)
             # TODO:
             tp_torch_utils.polyak_update(actor_batch_norm_stats, actor_batch_norm_stats_target, 1.0)
 
-    log_alpha = torch.nn.Parameter(torch.tensor(0.1).log(), requires_grad=True)
-    optimizer_alpha = torch.optim.Adam([log_alpha], lr=1e-3)
+    log_alpha = torch.nn.Parameter(torch.tensor(1.0).log(), requires_grad=True)
+    optimizer_log_alpha = torch.optim.Adam([log_alpha], lr=3e-4)
 
-    def set_parameters(parcel: dict):
-        step = parcel.get('step', 0)
-        if step < 100_000:
-            target_entropy = -30
-        elif step < 200_000:
-            target_entropy = -15
-        else:
-            target_entropy = -10
-        parcel['target_entropy'] = target_entropy
+    # def set_parameters(parcel: dict):
+    #     step = parcel.get('step', 0)
+    #     if step < 100_000:
+    #         target_entropy = -30
+    #     elif step < 200_000:
+    #         target_entropy = -15
+    #     else:
+    #         target_entropy = -10
+    #     parcel['target_entropy'] = target_entropy
 
     def learn(parcel: dict):
 
@@ -326,11 +329,12 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
                 if len(batch['obs']) < 2:
                     continue
 
-                with torch.no_grad():
-                    alpha = log_alpha.exp() # .clip(0.4, 1.6) # 0.1 # 
+                # with torch.no_grad():
+                #     alpha = log_alpha.exp() # .clip(0.4, 1.6) # 0.1 # 
 
                 # Now learn from the batch
 
+                alpha = log_alpha.detach().exp()
                 alphas.append(alpha.item())
 
                 obs = batch['obs'].to(torch.float32)
@@ -404,17 +408,16 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
 
                 # optimize alpha
 
-                optimizer_alpha.zero_grad()
+                optimizer_log_alpha.zero_grad()
 
-                with torch.no_grad():
-                    target_entropy = parcel['target_entropy'] # -17 # -dim Action space
-                    multiply = -log_prob - target_entropy
+                target_entropy = -17 # -dim Action space
 
-                loss = (log_alpha * multiply).mean()
+                alpha = log_alpha.exp()
+                loss_alpha = (-alpha * log_prob.detach() -alpha * target_entropy).mean()
 
-                loss.backward()
+                loss_alpha.backward()
 
-                optimizer_alpha.step()
+                optimizer_log_alpha.step()
 
                 # if parcel['step'] % 40_000 == 0:
                 #     scheduler_critic.step()
@@ -535,7 +538,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
             yield functools.partial(tp_gym_utils.call_reset, env=env)
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
-                set_parameters,
+                # set_parameters,
                 functools.partial(get_action, agent=actor), # , noise_level=noise_level),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
                 replay_buffer_collector,
@@ -584,7 +587,7 @@ def create_networks(state_space, action_space, env, use_batch_normilization, lay
 
 
 def create_networks_with_optuna_trial(optuna_trial, state_space, action_space, env):
-    use_batch_normilization = optuna_trial.suggest_categorical("use_batch_normilization", [False]) # True
+    use_batch_normilization = optuna_trial.suggest_categorical("use_batch_normilization", [False, True])
     layers_critic = optuna_trial.suggest_categorical("layers_critic", [
         "[512, 512, 512]",
         # "[300, 400, 400]",
@@ -657,6 +660,10 @@ def main():
         load_if_exists=True,
     )
 
+    optuna_study.enqueue_trial({
+        'use_batch_normilization': False,
+        # 'total_timesteps': 40_000,
+    })
     optuna_study.optimize(optuna_objective, n_trials=1)
 
 
