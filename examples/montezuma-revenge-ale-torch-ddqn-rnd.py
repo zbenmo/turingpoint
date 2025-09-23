@@ -427,7 +427,7 @@ def train(optuna_trial, env, actor: StateToQValues, fixed_random: FixedStateToRa
             tp_gym_utils.call_reset(parcel, env=env)
 
     def record_video(parcel: dict, videos_path: Path):
-        """When called, either returns immediatly, or renders a one episode video."""
+        """Renders a one episode video."""
 
         # Note, we make here usage of "rendering_env" which is slower than "env" as it includes rendering.
         # Those environments are assumed to be similar in all other aspects.
@@ -521,6 +521,8 @@ def create_network(state_space, action_space, env, use_batch_normilization) -> T
     ]:
     act = StateToQValues(action_space)
     fixed_random = FixedStateToRandom()
+    for param in fixed_random.parameters():
+        param.requires_grad = False
     rnd = StateToRND()
     return act, fixed_random, rnd
 
