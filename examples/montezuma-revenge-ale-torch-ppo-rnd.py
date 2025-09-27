@@ -29,21 +29,41 @@ import turingpoint.torch_utils as tp_torch_utils
 gym_environment = "ALE/MontezumaRevenge-v5"
 
 
-class StateToActionLogits(nn.Module):
-    def __init__(self, in_features, out_features, *args, **kwargs):
+class CNNLayer(nn.Module):
+    """CNN layers after each there is a non-linearity (ReLU), and also a flattening at the end."""
+    def __init__(self, in_channels, *args, **kwargs):
         super().__init__(*args, **kwargs)
         cnn_layers = []
-        in_channels = 4 # for 4 frames (history)
+        in_channels = in_channels # for 4 frames (history), 1 for a single frame
         out_size = np.array((84, 84))
         for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
             cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
             cnn_layers.append(nn.ReLU())
             in_channels = out_channels
             out_size = (out_size - kernel_size) // stride + 1
-        assert out_channels * out_size.prod() == 3136, f'{out_channels=}, {out_size=}'
+        self.num_ele = out_channels * out_size.prod()
+        assert self.num_ele == 3136, f'{out_channels=}, {out_size=}'
         self.net = nn.Sequential(
             *cnn_layers,
             nn.Flatten(),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs -> value (a regression)"""
+
+        return self.net(obs)
+    
+    @property
+    def num_elements(self) -> int:
+        return self.num_ele
+
+
+class StateToActionLogits(nn.Module):
+    def __init__(self, in_features, out_features, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cnn_layer = CNNLayer(in_channels=4)
+        self.net = nn.Sequential(
+            self.cnn_layer,
             nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
             nn.Linear(512, out_features),
@@ -59,18 +79,9 @@ class StateToActionLogits(nn.Module):
 class StateToValue(nn.Module):
     def __init__(self, in_features, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cnn_layers = []
-        in_channels = 4 # for 4 frames (history)
-        out_size = np.array((84, 84))
-        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
-            cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
-            cnn_layers.append(nn.ReLU())
-            in_channels = out_channels
-            out_size = (out_size - kernel_size) // stride + 1
-        assert out_channels * out_size.prod() == 3136, f'{out_channels=}, {out_size=}'
+        self.cnn_layer = CNNLayer(in_channels=4)
         self.net = nn.Sequential(
-            *cnn_layers,
-            nn.Flatten(),
+            self.cnn_layer,
             nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
             nn.Linear(512, 1),
@@ -85,23 +96,16 @@ class StateToValue(nn.Module):
 class FixedStateToRandom(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cnn_layers = []
-        in_channels = 1 # for 4 frames (history)
-        out_size = np.array((84, 84))
-        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
-            cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
-            cnn_layers.append(nn.ReLU())
-            in_channels = out_channels
-            out_size = (out_size - kernel_size) // stride + 1
-        num_ele = out_channels * out_size.prod()
+        self.cnn_layer = CNNLayer(in_channels=1)
         latent_dim = 128
         std = np.sqrt(2)
         bias_const = 0.0
-        orthogonal = nn.Linear(num_ele, latent_dim)
+        orthogonal = nn.Linear(self.cnn_layer.num_ele, latent_dim)
         torch.nn.init.orthogonal_(orthogonal.weight, std)
         torch.nn.init.constant_(orthogonal.bias, bias_const)
         self.net = nn.Sequential(
-            *cnn_layers,
+            nn.BatchNorm2d(num_features=1),
+            self.cnn_layer,
             nn.Flatten(),
             orthogonal,
             nn.ReLU(),
@@ -118,24 +122,16 @@ class FixedStateToRandom(nn.Module):
 class StateToRND(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cnn_layers = []
-        in_channels = 1 # for 4 frames (history)
-        out_size = np.array((84, 84))
-        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
-            cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
-            cnn_layers.append(nn.ReLU())
-            in_channels = out_channels
-            out_size = (out_size - kernel_size) // stride + 1
-        num_ele = out_channels * out_size.prod()
+        self.cnn_layer = CNNLayer(in_channels=1)
         latent_dim = 128
         std = np.sqrt(2)
         bias_const = 0.0
-        orthogonal = nn.Linear(num_ele, latent_dim)
+        orthogonal = nn.Linear(self.cnn_layer.num_ele, latent_dim)
         torch.nn.init.orthogonal_(orthogonal.weight, std)
         torch.nn.init.constant_(orthogonal.bias, bias_const)
         self.net = nn.Sequential(
             nn.BatchNorm2d(num_features=1),
-            *cnn_layers,
+            self.cnn_layer,
             nn.Flatten(),
             orthogonal,
             nn.ReLU(),
