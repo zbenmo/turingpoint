@@ -218,6 +218,38 @@ def collect_episodes(env, agent, num_episodes=40, max_episode_length=160) -> Lis
     return episodes
 
 
+class RunningMeanStd:
+    def __init__(self, epsilon=1e-4, shape=()):
+        self.mean = np.zeros(shape, 'float64')
+        self.var = np.ones(shape, 'float64')
+        self.count = epsilon
+
+    def update(self, x):
+        batch_mean = np.mean(x)
+        batch_var = np.var(x)
+        batch_count = len(x)
+        self._update_from_moments(batch_mean, batch_var, batch_count)
+
+    def _update_from_moments(self, batch_mean, batch_var, batch_count):
+        delta = batch_mean - self.mean
+        tot_count = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / tot_count
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + delta ** 2 * self.count * batch_count / tot_count
+        new_var = M2 / tot_count
+        new_count = tot_count
+
+        self.mean = new_mean
+        self.var = new_var
+        self.count = new_count
+
+    @property
+    def std(self):
+        return np.sqrt(self.var)
+
+
 def calc_intrinsic_reward(next_obs, fixed_random, rnd):
     with torch.no_grad():
         fixed_random_value = fixed_random(next_obs).squeeze()
@@ -289,8 +321,8 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
     gae = optuna_trial.suggest_float('gae_lambda', 0.999, 0.999) # lambda
     gae_int = optuna_trial.suggest_float('gae_lambda_int', 0.99, 0.99) # lambda for intrinsic rewards
     clip_coef = optuna_trial.suggest_float('clip_coef', 0.1, 0.1)
-    actor_lr = optuna_trial.suggest_float('actor_lr', 1e-4, 1e-4)
-    critic_lr = optuna_trial.suggest_float('critic_lr', 1e-4, 1e-4)
+    actor_lr = optuna_trial.suggest_float('actor_lr', 2.5e-4, 2.5e-4)
+    critic_lr = optuna_trial.suggest_float('critic_lr', 2.5e-4, 2.5e-4)
 
     optimizer = torch.optim.Adam(agent.parameters(), lr=actor_lr)
 
@@ -307,6 +339,8 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
     ) # TensorBoard
 
     num_episodes = 0
+
+    intrinsic_rms = RunningMeanStd()
 
     timesteps = 0
     with tqdm(total=total_timesteps, desc="training steps") as pbar:
@@ -341,7 +375,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                 log_probs_batch.extend(log_probs)
                 next_obs_batch.extend(next_obs)
 
-                values_ext = critic(torch.tensor(np.array(obs))).squeeze(-1).cpu().tolist()
+                values_ext: List = critic(torch.tensor(np.array(obs))).squeeze(-1).cpu().tolist()
                 values_ext.append(0.)
                 values_ext_batch.extend(r + discount * v for r, v in zip(rewards, values_ext[1:]))
                 advantages_ext = tp_utils.compute_gae(rewards, values_ext, gamma=discount, lambda_=gae)
@@ -353,8 +387,12 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                 values_int: List = critic_int(torch.tensor(np.array(next_obs))).squeeze(-1).cpu().tolist()
                 values_int.append(0.)
                 rewards_int = calc_intrinsic_reward(torch.tensor(np.array(next_obs))[:, -1:, :, :], fixed_random, rnd)
+                rewards_int_np = rewards_int.cpu().numpy()
+                intrinsic_rms.update(rewards_int_np)
+                rewards_int_norm = (rewards_int_np - intrinsic_rms.mean) / (intrinsic_rms.std + 1e-8)
+                rewards_int_norm = np.clip(rewards_int_norm, -5, 5)                 
                 values_int_batch.extend(r + discount * v for r, v in zip(rewards_int, values_int[1:]))
-                advantages_int = tp_utils.compute_gae(rewards_int, values_int, gamma=discount, lambda_=gae_int)
+                advantages_int = tp_utils.compute_gae(rewards_int_norm, values_int, gamma=discount, lambda_=gae_int)
                 advantage_int_batch.extend(advantages_int.tolist())
 
             obs_tensor = torch.tensor(np.array(obs_batch))
@@ -376,13 +414,13 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                 advantages_ext_tensor = normalize(advantages_ext_tensor)
                 advantages_int_tensor = normalize(advantages_int_tensor)
                 values_ext_tensor = normalize(values_ext_tensor)
-                values_int_tensor = normalize(values_int_tensor)
+                # values_int_tensor = normalize(values_int_tensor)
                 # TODO: all always?
 
             timesteps += len(log_probs_batch_tensor)
 
             ds = TensorDataset(obs_tensor, advantages_ext_tensor, values_ext_tensor, actions_tensor, log_probs_batch_tensor, next_obs_batch_tensor, values_int_tensor, advantages_int_tensor)
-            dl = DataLoader(ds, batch_size=128, shuffle=True)
+            dl = DataLoader(ds, batch_size=256, shuffle=True)
 
             losses_rnd = []
             for epoch in range(4):
@@ -416,7 +454,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                     loss1 = ratio * adv_ext
                     loss2 = torch.clip(ratio, 1. - clip_coef, 1. + clip_coef) * adv_ext
 
-                    coef_int = 2.0
+                    coef_int = 0.5
                     coef_ext = 1.0
 
                     loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * adv_int.mean())# we want to maximize
