@@ -29,7 +29,7 @@ import turingpoint.torch_utils as tp_torch_utils
 gym_environment = "ALE/MontezumaRevenge-v5"
 
 
-class CNNLayer(nn.Module):
+class CNNLayers(nn.Module):
     """CNN layers after each there is a non-linearity (ReLU), and also a flattening at the end."""
     def __init__(self, in_channels, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -61,9 +61,9 @@ class CNNLayer(nn.Module):
 class StateToActionLogits(nn.Module):
     def __init__(self, in_features, out_features, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cnn_layer = CNNLayer(in_channels=4)
+        self.cnn_layers = CNNLayers(in_channels=4)
         self.net = nn.Sequential(
-            self.cnn_layer,
+            self.cnn_layers,
             nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
             nn.Linear(512, out_features),
@@ -79,9 +79,9 @@ class StateToActionLogits(nn.Module):
 class StateToValue(nn.Module):
     def __init__(self, in_features, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cnn_layer = CNNLayer(in_channels=4)
+        self.cnn_layers = CNNLayers(in_channels=4)
         self.net = nn.Sequential(
-            self.cnn_layer,
+            self.cnn_layers,
             nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
             nn.Linear(512, 1),
@@ -96,23 +96,23 @@ class StateToValue(nn.Module):
 class FixedStateToRandom(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cnn_layer = CNNLayer(in_channels=1)
+        self.cnn_layers = CNNLayers(in_channels=1)
         latent_dim = 128
         std = np.sqrt(2)
         bias_const = 0.0
-        orthogonal = nn.Linear(self.cnn_layer.num_ele, latent_dim)
+        orthogonal = nn.Linear(self.cnn_layers.num_ele, latent_dim)
         torch.nn.init.orthogonal_(orthogonal.weight, std)
         torch.nn.init.constant_(orthogonal.bias, bias_const)
         self.net = nn.Sequential(
-            nn.BatchNorm2d(num_features=1),
-            self.cnn_layer,
+            # nn.BatchNorm2d(num_features=1),
+            self.cnn_layers,
             nn.Flatten(),
             orthogonal,
             nn.ReLU(),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        """obs -> random (regression)"""
+        """obs -> random (regression 128 values)"""
         # assert obs.ndim == 4, f'{obs.shape=}'
         # nn.Flatten() from above skips first dim, so if no batch, we fail to flatten all needed.
 
@@ -122,7 +122,7 @@ class FixedStateToRandom(nn.Module):
 class StateToRND(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cnn_layer = CNNLayer(in_channels=1)
+        self.cnn_layer = CNNLayers(in_channels=1)
         latent_dim = 128
         std = np.sqrt(2)
         bias_const = 0.0
@@ -130,7 +130,7 @@ class StateToRND(nn.Module):
         torch.nn.init.orthogonal_(orthogonal.weight, std)
         torch.nn.init.constant_(orthogonal.bias, bias_const)
         self.net = nn.Sequential(
-            nn.BatchNorm2d(num_features=1),
+            # nn.BatchNorm2d(num_features=1),
             self.cnn_layer,
             nn.Flatten(),
             orthogonal,
@@ -138,7 +138,7 @@ class StateToRND(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        """obs -> random (regression)"""
+        """obs -> random (regression 128 values)"""
         # assert obs.ndim == 4, f'{obs.shape=}'
         # nn.Flatten() from above skips first dim, so if no batch, we fail to flatten all needed.
 
@@ -153,12 +153,16 @@ def get_action(parcel: Dict, *, agent: StateToActionLogits):
     with torch.no_grad():
         logits = agent(torch.tensor(obs).unsqueeze(0))
         action_dist = dist.Categorical(logits=logits)
+        if random.random() < parcel.get('epsilon', 0.0):
+            action = torch.tensor(random.randrange(agent.out_features))
         action = action_dist.sample()
         parcel['action'] = action.item()
         parcel['log_prob'] = action_dist.log_prob(action) # may be useful for the training (note: still a tensor)
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
+
+    agent.eval()
 
     rewards_collector = tp_utils.Collector(['reward'])
 
@@ -182,22 +186,26 @@ def evaluate(env, agent, num_episodes: int) -> float:
     return total_reward / num_episodes
 
 
-def collect_episodes(env, agent, num_episodes=40) -> List[List[Dict]]:
+def collect_episodes(env, agent, num_episodes=40, max_episode_length=160) -> List[List[Dict]]:
 
     collector = tp_utils.Collector(['obs', 'action', 'log_prob', 'reward', 'next_obs'])
 
     def advance(parcel: dict):
         parcel['obs'] = parcel.pop('next_obs')
 
+    def set_epsilon(parcel: dict, *, epsilon: float):
+        parcel['epsilon'] = epsilon
+
     def get_episode_participants():
         yield functools.partial(tp_gym_utils.call_reset, env=env)
-        yield from itertools.cycle([
+        yield functools.partial(set_epsilon, epsilon=0.0) # TODO?
+        yield from itertools.chain.from_iterable(itertools.repeat(tuple([
                 functools.partial(get_action, agent=agent),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as='next_obs'),
                 collector,
                 tp_gym_utils.check_done,
                 advance,
-        ])
+        ]), times=max_episode_length))
 
     episodes_assembly = tp.Assembly(get_episode_participants)
 
@@ -214,34 +222,20 @@ def calc_intrinsic_reward(next_obs, fixed_random, rnd):
     with torch.no_grad():
         fixed_random_value = fixed_random(next_obs).squeeze()
         rnd_values = rnd(next_obs).squeeze()
-        return F.mse_loss(rnd_values, fixed_random_value, reduction="none").mean()
+        assert fixed_random_value.shape == rnd_values.shape, f'{fixed_random_value.shape=}, {rnd_values.shape=}'
+        return F.mse_loss(rnd_values, fixed_random_value, reduction="none").mean(dim=-1)
 
 
 videos_path = Path("videos")
 videos_path.mkdir(exist_ok=True)
 
 
-def train(optuna_trial, env, agent, critic, fixed_random, rnd, total_timesteps):
-    causality_to_be_accounted_for = True
-    normilize_the_rewards = True
-    discount = optuna_trial.suggest_float('discount', 0.95, 0.95) # gamma
-    gae = optuna_trial.suggest_float('gae_lambda', 0.999, 0.999) # lambda
-    gae_int = optuna_trial.suggest_float('gae_lambda_int', 0.99, 0.99) # lambda for intrinsic rewards
-    clip_coef = optuna_trial.suggest_float('clip_coef', 0.2, 0.2)
-    actor_lr = optuna_trial.suggest_float('actor_lr', 2e-5, 2e-5)
-    critic_lr = optuna_trial.suggest_float('critic_lr', 2e-5, 2e-5)
-        
-    optimizer = torch.optim.Adam(agent.parameters(), lr=actor_lr)
+def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total_timesteps):
 
-    critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
-
-    lr_rnd = optuna_trial.suggest_float("lr_rnd", 1e-4, 1e-4)
-
-    optimizer_rnd = torch.optim.Adam(rnd.parameters(), lr=lr_rnd)
-
-    writer = SummaryWriter(
-        f"runs/{gym_environment}_ppo_rnd_{optuna_trial.datetime_start.strftime('%Y_%B_%d__%H_%M%p')}_study_{optuna_trial.study.study_name}_trial_no_{optuna_trial.number}"
-    ) # TensorBoard
+    agent.train()
+    critic.train()
+    rnd.train()
+    critic_int.train()
 
     rendering_env = make_env(render_mode="rgb_array_list", max_episode_steps=1_000)
 
@@ -289,13 +283,36 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, total_timesteps):
         #     fps=rendering_env.metadata["render_fps"],
         # )
 
+    causality_to_be_accounted_for = True
+    normilize_the_rewards = True
+    discount = optuna_trial.suggest_float('discount', 0.95, 0.95) # gamma
+    gae = optuna_trial.suggest_float('gae_lambda', 0.999, 0.999) # lambda
+    gae_int = optuna_trial.suggest_float('gae_lambda_int', 0.99, 0.99) # lambda for intrinsic rewards
+    clip_coef = optuna_trial.suggest_float('clip_coef', 0.1, 0.1)
+    actor_lr = optuna_trial.suggest_float('actor_lr', 1e-4, 1e-4)
+    critic_lr = optuna_trial.suggest_float('critic_lr', 1e-4, 1e-4)
+
+    optimizer = torch.optim.Adam(agent.parameters(), lr=actor_lr)
+
+    critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
+
+    lr_rnd = optuna_trial.suggest_float("lr_rnd", 1e-4, 1e-4)
+
+    optimizer_rnd = torch.optim.Adam(rnd.parameters(), lr=lr_rnd)
+
+    critic_int_optimizer = torch.optim.Adam(critic_int.parameters(), lr=critic_lr) # using same lr as for critic for now
+
+    writer = SummaryWriter(
+        f"runs/{gym_environment}_ppo_rnd_{optuna_trial.datetime_start.strftime('%Y_%B_%d__%H_%M%p')}_study_{optuna_trial.study.study_name}_trial_no_{optuna_trial.number}"
+    ) # TensorBoard
+
     num_episodes = 0
 
     timesteps = 0
     with tqdm(total=total_timesteps, desc="training steps") as pbar:
         while timesteps < total_timesteps:
 
-            episodes = collect_episodes(env, agent, num_episodes=4)
+            episodes = collect_episodes(env, agent, num_episodes=8)
             num_episodes += len(episodes)
 
             # Now learn from above episodes
@@ -307,55 +324,72 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, total_timesteps):
             obs_batch = []
             action_batch = []
             log_probs_batch = []
-            values_batch = []
-            advantage_batch = []
+            next_obs_batch = []
+            values_ext_batch = []
+            advantage_ext_batch = []
+            values_int_batch = []
+            advantage_int_batch = []
 
             total_rewards = []
 
             for episode in episodes:
-                obs, actions, rewards, log_probs, next_obs = zip(*((e['obs'], e['action'], e['reward'], e['log_prob'], e['next_obs']) for e in episode))
+                obs, actions, rewards, log_probs, next_obs = (
+                    zip(*((e['obs'], e['action'], e['reward'], e['log_prob'], e['next_obs']) for e in episode))
+                )
                 obs_batch.extend(obs)
                 action_batch.extend(actions)
                 log_probs_batch.extend(log_probs)
-                values = critic(torch.tensor(np.array(obs))).squeeze(-1).cpu().tolist()
-                values.append(0.)
-                values_batch.extend(r + discount * v for r, v in zip(rewards, values[1:]))
-                advantages = tp_utils.compute_gae(rewards, values, gamma=discount, lambda_=gae)
-                advantage_batch.extend(advantages)
+                next_obs_batch.extend(next_obs)
+
+                values_ext = critic(torch.tensor(np.array(obs))).squeeze(-1).cpu().tolist()
+                values_ext.append(0.)
+                values_ext_batch.extend(r + discount * v for r, v in zip(rewards, values_ext[1:]))
+                advantages_ext = tp_utils.compute_gae(rewards, values_ext, gamma=discount, lambda_=gae)
+                advantage_ext_batch.extend(advantages_ext)
+
                 total_reward = sum(rewards) # TODO: discounted reward?
                 total_rewards.append(total_reward)
 
+                values_int: List = critic_int(torch.tensor(np.array(next_obs))).squeeze(-1).cpu().tolist()
+                values_int.append(0.)
+                rewards_int = calc_intrinsic_reward(torch.tensor(np.array(next_obs))[:, -1:, :, :], fixed_random, rnd)
+                values_int_batch.extend(r + discount * v for r, v in zip(rewards_int, values_int[1:]))
+                advantages_int = tp_utils.compute_gae(rewards_int, values_int, gamma=discount, lambda_=gae_int)
+                advantage_int_batch.extend(advantages_int.tolist())
+
             obs_tensor = torch.tensor(np.array(obs_batch))
             actions_tensor = torch.tensor(action_batch)
-            advantages_tensor = torch.tensor(advantage_batch)
+            advantages_ext_tensor = torch.tensor(advantage_ext_batch)
             log_probs_batch_tensor = torch.tensor(log_probs_batch)
-            values_tensor = torch.tensor(values_batch, dtype=torch.float32)
+            next_obs_batch_tensor = torch.tensor(np.array(next_obs_batch))
+            values_ext_tensor = torch.tensor(values_ext_batch, dtype=torch.float32)
+            values_int_tensor = torch.tensor(values_int_batch, dtype=torch.float32)
+            advantages_int_tensor = torch.tensor(advantage_int_batch)
 
-            assert len(log_probs_batch_tensor) == len(advantages_tensor), f'{len(log_probs_batch_tensor)=}, {len(advantages_tensor)=}'
+            assert len(log_probs_batch_tensor) == len(advantages_ext_tensor), f'{len(log_probs_batch_tensor)=}, {len(advantages_ext_tensor)=}'
+
+            def normalize(x: torch.Tensor) -> torch.Tensor:
+                x_mean = x.mean()
+                return (x - x_mean) / (x.std() + 1e-5)
 
             if normilize_the_rewards:
-                advantages_tensor_mean = advantages_tensor.mean()
-                advantages_tensor = (advantages_tensor - advantages_tensor_mean) / (advantages_tensor.std() + 1e-5)
+                advantages_ext_tensor = normalize(advantages_ext_tensor)
+                advantages_int_tensor = normalize(advantages_int_tensor)
+                values_ext_tensor = normalize(values_ext_tensor)
+                values_int_tensor = normalize(values_int_tensor)
+                # TODO: all always?
 
             timesteps += len(log_probs_batch_tensor)
 
-            ds = TensorDataset(obs_tensor, advantages_tensor, values_tensor, actions_tensor, log_probs_batch_tensor)
+            ds = TensorDataset(obs_tensor, advantages_ext_tensor, values_ext_tensor, actions_tensor, log_probs_batch_tensor, next_obs_batch_tensor, values_int_tensor, advantages_int_tensor)
             dl = DataLoader(ds, batch_size=128, shuffle=True)
 
             losses_rnd = []
             for epoch in range(4):
-                for o, adv, v, act, l_p in islice(dl, None):
+                for o, adv_ext, v_ext, act, l_p, next_obs, v_int, adv_int in islice(dl, None):
 
-                    next_obs = o[:, -1:, :, :].detach() # only the last frame for RND
-
-                    intrinsic_rewards = calc_intrinsic_reward(next_obs, fixed_random, rnd)
-
-                    critic_optimizer.zero_grad()
-
-                    optimizer.zero_grad()
-
-                    fixed_random_value = fixed_random(next_obs)
-                    rnd_values = rnd(next_obs)
+                    fixed_random_value = fixed_random(next_obs[:, -1:, :, :])
+                    rnd_values = rnd(next_obs[:, -1:, :, :])
 
                     # optimize rnd
 
@@ -368,20 +402,24 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, total_timesteps):
 
                     optimizer_rnd.step()
 
+                    #
+
                     logits = agent(o)
                     action_dist = dist.Categorical(logits=logits)
                     log_probs = action_dist.log_prob(act)
 
                     # assert probs.shape == probs_batch_tensor.shape, f'{probs.shape=}, {probs_batch_tensor.shape=}'
 
+                    optimizer.zero_grad()
+
                     ratio = (log_probs - l_p).exp()
-                    loss1 = ratio * adv
-                    loss2 = torch.clip(ratio, 1. - clip_coef, 1. + clip_coef) * adv
+                    loss1 = ratio * adv_ext
+                    loss2 = torch.clip(ratio, 1. - clip_coef, 1. + clip_coef) * adv_ext
 
                     coef_int = 2.0
                     coef_ext = 1.0
 
-                    loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * intrinsic_rewards)# we want to maximize
+                    loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * adv_int.mean())# we want to maximize
 
                     loss.backward()
 
@@ -389,11 +427,23 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, total_timesteps):
 
                     # optimize the critic
 
-                    critic_loss = F.mse_loss(critic(o).squeeze(-1), v)
+                    critic_optimizer.zero_grad()
+
+                    critic_loss = F.mse_loss(critic(o).squeeze(-1), v_ext)
 
                     critic_loss.backward()
 
                     critic_optimizer.step()
+
+                    # optimize the intrinsic critic
+
+                    critic_int_optimizer.zero_grad()
+
+                    critic_int_loss = F.mse_loss(critic_int(next_obs).squeeze(-1), v_int)
+
+                    critic_int_loss.backward()
+
+                    critic_int_optimizer.step()
 
                     #
 
@@ -403,7 +453,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, total_timesteps):
 
             writer.add_scalar("Mean Rewards/train", np.mean(total_rewards), timesteps)
 
-            pbar.update(len(advantages_tensor))
+            pbar.update(len(advantages_ext_tensor))
 
             if num_episodes % 20 == 0:
                 record_video(num_episodes, videos_path)
@@ -432,6 +482,7 @@ def create_network(state_space, action_space, env, use_batch_normilization) -> T
         StateToValue,
         FixedStateToRandom,
         StateToRND,
+        StateToValue,
     ]:
     act = StateToActionLogits(state_space, action_space)
     critic = StateToValue(state_space)
@@ -439,7 +490,8 @@ def create_network(state_space, action_space, env, use_batch_normilization) -> T
     for param in fixed_random.parameters():
         param.requires_grad = False
     rnd = StateToRND()
-    return act, critic, fixed_random, rnd
+    critic_int = StateToValue(state_space)
+    return act, critic, fixed_random, rnd, critic_int
 
 
 def create_network_with_optuna_trial(optuna_trial, state_space, action_space, env):
@@ -465,7 +517,7 @@ def optuna_objective(optuna_trial):
     state_space = env.observation_space.shape[0]
     action_space = env.action_space.n
 
-    agent, critic, fixed_random, rnd = create_network_with_optuna_trial(optuna_trial, state_space, action_space, env)
+    agent, critic, fixed_random, rnd, critic_int = create_network_with_optuna_trial(optuna_trial, state_space, action_space, env)
 
     episodes_for_evaluation = 10
 
@@ -473,7 +525,7 @@ def optuna_objective(optuna_trial):
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(optuna_trial, env, agent, critic, fixed_random, rnd, total_timesteps=400_000) # 4_000_000)
+    train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total_timesteps=400_000) # 4_000_000)
 
     mean_reward_after_train = evaluate(env, agent, episodes_for_evaluation)
     print("after training")
@@ -498,3 +550,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
