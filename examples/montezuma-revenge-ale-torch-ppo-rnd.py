@@ -186,7 +186,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
     return total_reward / num_episodes
 
 
-def collect_episodes(env, agent, num_episodes=40, max_episode_length=160) -> List[List[Dict]]:
+def collect_episodes(env, agent, num_episodes=40, max_episode_length=800) -> List[List[Dict]]:
 
     collector = tp_utils.Collector(['obs', 'action', 'log_prob', 'reward', 'next_obs'])
 
@@ -349,6 +349,9 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
             episodes = collect_episodes(env, agent, num_episodes=8)
             num_episodes += len(episodes)
 
+            episode_lengths = [len(ep) for ep in episodes]
+            writer.add_scalar("Episode Length/mean", np.mean(episode_lengths), timesteps)
+
             # Now learn from above episodes
 
             # disclaimer: a lot more of vectorization can be done here.
@@ -363,6 +366,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
             advantage_ext_batch = []
             values_int_batch = []
             advantage_int_batch = []
+            entropty_batch = []
 
             total_rewards = []
 
@@ -390,7 +394,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                 rewards_int_np = rewards_int.cpu().numpy()
                 intrinsic_rms.update(rewards_int_np)
                 rewards_int_norm = (rewards_int_np - intrinsic_rms.mean) / (intrinsic_rms.std + 1e-8)
-                rewards_int_norm = np.clip(rewards_int_norm, -5, 5)                 
+                rewards_int_norm = np.clip(rewards_int_norm, -5, 5)
                 values_int_batch.extend(r + discount * v for r, v in zip(rewards_int, values_int[1:]))
                 advantages_int = tp_utils.compute_gae(rewards_int_norm, values_int, gamma=discount, lambda_=gae_int)
                 advantage_int_batch.extend(advantages_int.tolist())
@@ -404,6 +408,8 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
             values_int_tensor = torch.tensor(values_int_batch, dtype=torch.float32)
             advantages_int_tensor = torch.tensor(advantage_int_batch)
 
+            writer.add_scalar("Log Probs/train", log_probs_batch_tensor.mean().item(), timesteps)
+
             assert len(log_probs_batch_tensor) == len(advantages_ext_tensor), f'{len(log_probs_batch_tensor)=}, {len(advantages_ext_tensor)=}'
 
             def normalize(x: torch.Tensor) -> torch.Tensor:
@@ -413,7 +419,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
             if normilize_the_rewards:
                 advantages_ext_tensor = normalize(advantages_ext_tensor)
                 advantages_int_tensor = normalize(advantages_int_tensor)
-                values_ext_tensor = normalize(values_ext_tensor)
+                # values_ext_tensor = normalize(values_ext_tensor)
                 # values_int_tensor = normalize(values_int_tensor)
                 # TODO: all always?
 
@@ -445,6 +451,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                     logits = agent(o)
                     action_dist = dist.Categorical(logits=logits)
                     log_probs = action_dist.log_prob(act)
+                    entropy = action_dist.entropy()
 
                     # assert probs.shape == probs_batch_tensor.shape, f'{probs.shape=}, {probs_batch_tensor.shape=}'
 
@@ -454,10 +461,11 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                     loss1 = ratio * adv_ext
                     loss2 = torch.clip(ratio, 1. - clip_coef, 1. + clip_coef) * adv_ext
 
-                    coef_int = 0.5
+                    coef_int = 0.5 if timesteps > 20_000 else 0.0
                     coef_ext = 1.0
+                    entropy_coef = 0.1
 
-                    loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * adv_int.mean())# we want to maximize
+                    loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * adv_int.mean() -entropy_coef * entropy.mean())# we want to maximize
 
                     loss.backward()
 
