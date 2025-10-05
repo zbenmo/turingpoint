@@ -198,7 +198,7 @@ def collect_episodes(env, agent, num_episodes=40, max_episode_length=800) -> Lis
 
     def get_episode_participants():
         yield functools.partial(tp_gym_utils.call_reset, env=env)
-        yield functools.partial(set_epsilon, epsilon=0.0) # TODO?
+        yield functools.partial(set_epsilon, epsilon=0) # TODO?
         yield from itertools.chain.from_iterable(itertools.repeat(tuple([
                 functools.partial(get_action, agent=agent),
                 functools.partial(tp_gym_utils.call_step, env=env, save_obs_as='next_obs'),
@@ -341,10 +341,24 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
     num_episodes = 0
 
     intrinsic_rms = RunningMeanStd()
+    next_rms_update = 20_000
+
+    entropy_coef = 0.001
+    # next_entropy_update = 0
 
     timesteps = 0
     with tqdm(total=total_timesteps, desc="training steps") as pbar:
         while timesteps < total_timesteps:
+
+            # if next_entropy_update <= timesteps:
+            #     # after some initial exploration, we reduce the entropy coefficient
+            #     entropy_coef = 0.04
+
+            if next_rms_update <= timesteps:
+                next_rms_update += 20_000
+                intrinsic_rms = RunningMeanStd()
+            #     entropy_coef = 0.04
+            #     next_entropy_update = timesteps + 1_000
 
             episodes = collect_episodes(env, agent, num_episodes=8)
             num_episodes += len(episodes)
@@ -408,7 +422,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
             values_int_tensor = torch.tensor(values_int_batch, dtype=torch.float32)
             advantages_int_tensor = torch.tensor(advantage_int_batch)
 
-            writer.add_scalar("Log Probs/train", log_probs_batch_tensor.mean().item(), timesteps)
+            writer.add_scalar("Log Probs", log_probs_batch_tensor.mean().item(), timesteps)
 
             assert len(log_probs_batch_tensor) == len(advantages_ext_tensor), f'{len(log_probs_batch_tensor)=}, {len(advantages_ext_tensor)=}'
 
@@ -432,14 +446,14 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
             for epoch in range(4):
                 for o, adv_ext, v_ext, act, l_p, next_obs, v_int, adv_int in islice(dl, None):
 
-                    fixed_random_value = fixed_random(next_obs[:, -1:, :, :])
+                    fixed_random_values = fixed_random(next_obs[:, -1:, :, :])
                     rnd_values = rnd(next_obs[:, -1:, :, :])
 
                     # optimize rnd
 
                     optimizer_rnd.zero_grad()
 
-                    loss_rnd = F.mse_loss(rnd_values, fixed_random_value)
+                    loss_rnd = F.mse_loss(rnd_values, fixed_random_values, reduction="none").mean(dim=0).sum()
                     loss_rnd.backward()
 
                     losses_rnd.append(loss_rnd.item())
@@ -461,9 +475,8 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                     loss1 = ratio * adv_ext
                     loss2 = torch.clip(ratio, 1. - clip_coef, 1. + clip_coef) * adv_ext
 
-                    coef_int = 0.5 if timesteps > 20_000 else 0.0
+                    coef_int = 0.5 if timesteps > 50_000 else 0.0
                     coef_ext = 1.0
-                    entropy_coef = 0.1
 
                     loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * adv_int.mean() -entropy_coef * entropy.mean())# we want to maximize
 
@@ -493,11 +506,14 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
 
                     #
 
-                    writer.add_scalar("Loss/train", loss, timesteps)
-                    writer.add_scalar("Loss Critic/train", critic_loss, timesteps)
-                    writer.add_scalar("Loss RND/train", loss_rnd, timesteps)
+                    writer.add_scalar("Loss", loss, timesteps)
+                    writer.add_scalar("Loss Critic", critic_loss, timesteps)
+                    writer.add_scalar("Loss RND", loss_rnd, timesteps)
 
-            writer.add_scalar("Mean Rewards/train", np.mean(total_rewards), timesteps)
+            writer.add_scalar("Mean Rewards", np.mean(total_rewards), timesteps)
+            writer.add_scalar("RND intrinsic reward running mean", intrinsic_rms.mean, timesteps)
+                # print(f'RND intrinsic reward running mean: {intrinsic_rms.mean}, std: {intrinsic_rms.std}')
+            writer.add_scalar("entropy_coef", entropy_coef, timesteps)
 
             pbar.update(len(advantages_ext_tensor))
 
@@ -557,6 +573,8 @@ def optuna_objective(optuna_trial):
     env = make_env()
 
     env.reset(seed=1)
+    env.action_space.seed(1)
+    env.observation_space.seed(1)
 
     # state and obs/observations are used in this example interchangably.
 
@@ -571,7 +589,7 @@ def optuna_objective(optuna_trial):
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total_timesteps=400_000) # 4_000_000)
+    train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total_timesteps=4_000_000)
 
     mean_reward_after_train = evaluate(env, agent, episodes_for_evaluation)
     print("after training")
