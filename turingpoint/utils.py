@@ -38,10 +38,18 @@ def make_sequence(participants: List[Participant]) -> Participant:
   return wrapped
 
 
-def call_every(parcel: dict, every_x_steps: int, protected: Participant):
-   """Use this participant-like to wrap another participant that should be called only every 'every_x_step' steps."""
-   if parcel['step'] % every_x_steps == 0:
+def call_after_every(parcel: dict, every_x_steps: int, protected: Participant):
+   """Use this participant-like to wrap another participant that should be called only every 'every_x_step' steps.
+   It relies on 'step' being in the parcel."""
+   if (parcel['step'] + 1) % every_x_steps == 0:
       protected(parcel)
+
+
+def skip_first_n_steps(parcel: dict, n: int, protected: Participant):
+    """Use this participant-like to wrap another participant that should be called only after the first n steps.
+    It relies on 'step' being in the parcel."""
+    if parcel['step'] >= n:
+        protected(parcel)
 
 
 def discounted_reward_to_go(rewards: Sequence[float], gamma=1.0) -> Sequence[float]:
@@ -98,7 +106,8 @@ class ReplayBufferCollector:
         del self.replay_buffer[0:-self.max_entries]
 
 
-# Taken from CoPilot 
+# Taken from CoPilot
+
 def compute_gae(rewards, values, gamma=0.99, lambda_=0.95):
     """
     Compute Generalized Advantage Estimation (GAE).
@@ -112,14 +121,16 @@ def compute_gae(rewards, values, gamma=0.99, lambda_=0.95):
     Returns:
         np.array: Computed advantage estimates.
     """
+    assert len(values) - len(rewards) == 1, f'{len(values)=}, {len(rewards)=}'
+
     advantages = np.zeros_like(rewards)
     last_advantage = 0
-    
+ 
     for t in reversed(range(len(rewards))):
         delta = rewards[t] + gamma * values[t + 1] - values[t]
         advantages[t] = delta + gamma * lambda_ * last_advantage
         last_advantage = advantages[t]
-    
+
     return advantages
 
 # # Example usage:
@@ -128,4 +139,35 @@ def compute_gae(rewards, values, gamma=0.99, lambda_=0.95):
 # gamma = 0.99
 # lambda_ = 0.95
 
-# advantages = compute_gae(rewards, values, gamma, lambda_)
+# # advantages = compute_gae(rewards, values, gamma, lambda_)
+
+# def compute_gae(rewards, values, dones=None, gamma=0.99, lambda_=0.95): # TODO: ??? (re: does it really work re: terminated/truncated)
+#     advantages = np.zeros_like(rewards)
+#     gae = 0
+#     for t in reversed(range(len(rewards))):
+#         next_value = values[t + 1] if t + 1 < len(values) else 0
+#         done = dones[t] if dones is not None else 0
+#         delta = rewards[t] + gamma * next_value * (1 - done) - values[t]
+#         gae = delta + gamma * lambda_ * (1 - done) * gae
+#         advantages[t] = gae
+#     return advantages
+
+# def compute_gae(rewards, values, terminated, truncated, gamma=0.99, lambda_=0.95):
+#     assert len(values) - len(rewards) == 1, f'{len(values)=}, {len(rewards)=}'
+#     advantages = np.zeros_like(rewards)
+#     gae = 0
+#     for t in reversed(range(len(rewards))):
+#       next_value = values[t + 1]
+#       done = terminated[t] or truncated[t]
+#       delta = rewards[t] + gamma * next_value * (1 - done) - values[t]
+#       gae = delta + gamma * lambda_ * (1 - done) * gae
+#       advantages[t] = gae
+#     return advantages
+#     gae = 0
+#     for t in reversed(range(len(rewards))):
+#         next_value = values[t + 1] if t + 1 < len(values) else 0
+#         done = dones[t] if dones is not None else 0
+#         delta = rewards[t] + gamma * next_value * (1 - done) - values[t]
+#         gae = delta + gamma * lambda_ * (1 - done) * gae
+#         advantages[t] = gae
+#     return advantages

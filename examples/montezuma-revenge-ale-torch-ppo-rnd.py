@@ -155,7 +155,8 @@ def get_action(parcel: Dict, *, agent: StateToActionLogits):
         action_dist = dist.Categorical(logits=logits)
         if random.random() < parcel.get('epsilon', 0.0):
             action = torch.tensor(random.randrange(agent.out_features))
-        action = action_dist.sample()
+        else:
+            action = action_dist.sample()
         parcel['action'] = action.item()
         parcel['log_prob'] = action_dist.log_prob(action) # may be useful for the training (note: still a tensor)
 
@@ -528,7 +529,7 @@ def make_env(**kwargs) -> gym.Env:
     env = AtariPreprocessing(
         env,
         noop_max=30,
-        frame_skip=4,
+        frame_skip=1,
         screen_size=84,
         terminal_on_life_loss=False,
         grayscale_obs=True,

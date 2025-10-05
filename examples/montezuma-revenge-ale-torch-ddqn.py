@@ -339,7 +339,7 @@ def train(optuna_trial, env, actor: StateToQValues, total_timesteps):
                 per_episode_rewards_collector,
                 logging,
                 functools.partial(
-                    tp_utils.call_every,
+                    tp_utils.call_after_every,
                     every_x_steps=1_000,
                     protected=functools.partial(record_video, videos_path=videos_path)
                 ),

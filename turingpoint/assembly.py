@@ -37,6 +37,7 @@ class Assembly:
     """
 
     parcel = {}
+    participant = None
     try:
       for participant in self._get_participants():
         if participant is None:

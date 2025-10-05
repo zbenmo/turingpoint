@@ -434,7 +434,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critic: Sta
                 take_interesting_info, # those will potentially be also logged.
                 logging,
                 functools.partial(
-                    tp_utils.call_every,
+                    tp_utils.call_after_every,
                     every_x_steps=5000,
                     protected=functools.partial(record_video, videos_path=videos_path)
                 ),
