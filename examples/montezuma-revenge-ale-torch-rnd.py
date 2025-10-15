@@ -118,7 +118,6 @@ class StateToRND(nn.Module):
         return self.net(obs)
 
 
-
 def make_env(**kwargs) -> gym.Env:
     env = gym.make(gym_environment, frameskip=1, **kwargs) # (210, 160, 3)
     env = AtariPreprocessing(
@@ -280,6 +279,13 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
     actor_lr = optuna_trial.suggest_float('actor_lr', 2.5e-4, 2.5e-4)
     critic_lr = optuna_trial.suggest_float('critic_lr', 2.5e-4, 2.5e-4)
 
+    entropy_coef = optuna_trial.suggest_float('entropy_coef', 0.001, 0.1)
+
+    coef_int = optuna_trial.suggest_float('coef_int', 0.01, 0.5)
+    coef_ext = optuna_trial.suggest_float('coef_ext', 1.0, 1.0)
+
+    should_record_video = optuna_trial.suggest_categorical('record_video', [False, True])
+
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=actor_lr)
 
     critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
@@ -292,14 +298,17 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
 
     def calc_intrinsic_reward(next_obs, fixed_random, rnd):
         with torch.no_grad():
-            fixed_random_value = fixed_random(next_obs).squeeze()
-            rnd_values = rnd(next_obs).squeeze()
+            fixed_random_value = fixed_random(next_obs) #.squeeze()
+            rnd_values = rnd(next_obs) #.squeeze()
             assert fixed_random_value.shape == rnd_values.shape, f'{fixed_random_value.shape=}, {rnd_values.shape=}'
             return F.mse_loss(rnd_values, fixed_random_value, reduction="none").mean(dim=-1)
 
     def extract_lists_from_generator_of_dicts(generator_of_dicts: Generator[Dict, None, None], keys: Sequence[str]) -> Sequence[List]:
         return tuple(map(list, zip(*((e[k] for k in keys) for e in generator_of_dicts))))
 
+    intrinsic_rms = RunningMeanStd()
+
+    @tp_utils.track_calls
     def learn(parcel: dict):
         obs, action, reward, log_prob, next_obs, terminated, truncated = extract_lists_from_generator_of_dicts(
             generator_of_dicts=collector.get_entries(),
@@ -312,7 +321,10 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
         reward_tensor = torch.tensor(reward, dtype=torch.float32)
         log_prob_tensor = torch.tensor(log_prob)
         next_obs_tensor = torch.tensor(np.array(next_obs))
-        # terminated_tensor = torch.tensor(terminated, dtype=torch.float32)
+
+        assert len(obs) == 128, f'{len(obs)=}'
+
+        parcel['log_prob_mean'] = log_prob_tensor.mean().item()
 
         done_flags = np.logical_or(terminated, truncated)
         episode_fragment_index = np.cumsum(done_flags)
@@ -322,74 +334,59 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
         values_int_batch = []
         advantage_int_batch = []
 
-        for _, group in groupby(range(len(episode_fragment_index)), key=lambda i: episode_fragment_index[i]):
-            indices = list(group)
-            last_index = indices[-1]
-            relevant_obs = obs_tensor[indices]
-            relevant_reward = reward_tensor[indices]
-            if terminated[last_index]:
-                # add 0 to the end
-                values_ext = critic(relevant_obs).squeeze(-1).cpu().tolist()
-                values_ext.append(0.)
-            else:
-                # add the value estimate of the last "next_obs"
-                relevant_obs = torch.cat([relevant_obs, next_obs_tensor[last_index:last_index+1]], axis=0)
-                values_ext = critic(relevant_obs).squeeze(-1).cpu().tolist()
-            relevant_reward = relevant_reward.cpu().tolist()
-            values_ext_batch.extend(r + discount * v for r, v in zip(relevant_reward, values_ext[1:]))
-            advantages_ext = tp_utils.compute_gae(relevant_reward, values_ext, gamma=discount, lambda_=gae)
-            advantage_ext_batch.extend(advantages_ext)
+        with torch.no_grad():
+            for _, group in groupby(range(len(episode_fragment_index)), key=lambda i: episode_fragment_index[i]):
+                indices = list(group)
+                last_index = indices[-1]
+                relevant_obs = obs_tensor[indices]
+                relevant_reward = reward_tensor[indices]
+                if terminated[last_index]:
+                    # add 0 to the end
+                    values_ext = critic(relevant_obs).squeeze(-1).cpu().tolist()
+                    values_ext.append(0.)
+                else:
+                    # add the value estimate of the last "next_obs"
+                    relevant_obs = torch.cat([relevant_obs, next_obs_tensor[last_index:last_index+1]], axis=0)
+                    values_ext = critic(relevant_obs).squeeze(-1).cpu().tolist()
+                relevant_reward = relevant_reward.cpu().tolist()
+                values_ext_batch.extend(r + discount * v for r, v in zip(relevant_reward, values_ext[1:]))
+                advantages_ext = tp_utils.compute_gae(relevant_reward, values_ext, gamma=discount, lambda_=gae)
+                advantage_ext_batch.extend(advantages_ext)
 
         total_rewards = [] # strange there will be only one reward per learn call TODO:
 
         total_reward = sum(reward) # TODO: discounted reward?
         total_rewards.append(total_reward)
 
-        intrinsic_rms = RunningMeanStd()
-
         values_int_batch = []
         advantage_int_batch = []
 
-        for _, group in groupby(range(len(episode_fragment_index)), key=lambda i: episode_fragment_index[i]):
-            indices = list(group)
-            last_index = indices[-1]
-            # relevant_obs = obs_tensor[indices]
-            # relevant_reward = reward_tensor[indices]
-            # if terminated[last_index]:
-            #     # add 0 to the end
-            #     values_ext = critic(relevant_obs).squeeze(-1).cpu().tolist()
-            #     values_ext.append(0.)
-            # else:
-            #     # add the value estimate of the last "next_obs"
-            #     relevant_obs = torch.cat([relevant_obs, next_obs_tensor[last_index:last_index+1]], axis=0)
-            #     values_ext = critic(relevant_obs).squeeze(-1).cpu().tolist()
-            # relevant_reward = relevant_reward.cpu().tolist()
-            # values_ext_batch.extend(r + discount * v for r, v in zip(relevant_reward, values_ext[1:]))
-            # advantages_ext = tp_utils.compute_gae(relevant_reward, values_ext, gamma=discount, lambda_=gae)
-            # advantage_ext_batch.extend(advantages_ext)
-            relevant_next_obs = next_obs_tensor[indices]
-            if terminated[last_index]:
-                values_int = critic_int(relevant_next_obs).squeeze(-1).cpu().tolist()
-                values_int.append(0.)
-            else:
-                # TODO: the same?
-                values_int = critic_int(relevant_next_obs).squeeze(-1).cpu().tolist()
-                values_int.append(0.)
-            rewards_int = calc_intrinsic_reward(relevant_next_obs[:, -1:, :, :], fixed_random, rnd)
-            rewards_int_np = rewards_int.cpu().numpy()
-            intrinsic_rms.update(rewards_int_np)
-            rewards_int_norm = (rewards_int_np - intrinsic_rms.mean) / (intrinsic_rms.std + 1e-8)
-            rewards_int_norm = np.clip(rewards_int_norm, -5, 5)
-            values_int_batch.extend(r + discount * v for r, v in zip(rewards_int, values_int[1:]))
-            advantages_int = tp_utils.compute_gae(rewards_int_norm, values_int, gamma=discount, lambda_=gae_int)
-            advantage_int_batch.extend(advantages_int.tolist())
+        with torch.no_grad():
+            for _, group in groupby(range(len(episode_fragment_index)), key=lambda i: episode_fragment_index[i]):
+                indices = list(group)
+                last_index = indices[-1]
+                relevant_next_obs = next_obs_tensor[indices]
+                if terminated[last_index]:
+                    values_int = critic_int(relevant_next_obs).squeeze(-1).cpu().tolist()
+                    values_int.append(0.)
+                else:
+                    # TODO: the same?
+                    values_int = critic_int(relevant_next_obs).squeeze(-1).cpu().tolist()
+                    values_int.append(0.)
+                rewards_int = calc_intrinsic_reward(relevant_next_obs[:, -1:, :, :], fixed_random, rnd)
+                rewards_int_np = rewards_int.cpu().numpy()
+                rewards_int_norm = (rewards_int_np - intrinsic_rms.mean) / (intrinsic_rms.std + 1e-8)
+                rewards_int_norm = np.clip(rewards_int_norm, -5, 5)
+                values_int_batch.extend(r + discount * v for r, v in zip(rewards_int, values_int[1:]))
+                advantages_int = tp_utils.compute_gae(rewards_int_norm, values_int, gamma=discount, lambda_=gae_int)
+                advantage_int_batch.extend(advantages_int.tolist())
 
         advantages_ext_tensor = torch.tensor(advantage_ext_batch)
-        # log_probs_batch_tensor = torch.tensor(log_probs)
-        # next_obs_batch_tensor = torch.tensor(np.array(next_obs))
         values_ext_tensor = torch.tensor(values_ext_batch, dtype=torch.float32)
         values_int_tensor = torch.tensor(values_int_batch, dtype=torch.float32)
         advantages_int_tensor = torch.tensor(advantage_int_batch)
+
+        parcel['mean_int_reward'] = advantages_int_tensor.mean().item()
 
         ds = TensorDataset(
             obs_tensor,
@@ -401,19 +398,24 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
             values_int_tensor,
             advantages_int_tensor,
         )
-        dl = DataLoader(ds, batch_size=32, shuffle=True) # 256
+        dl = DataLoader(ds, batch_size=64, shuffle=True) # 256
 
-        entropy_coef = 0.001
+        parcel['coef_int'] = coef_int
+        parcel['coef_ext'] = coef_ext
+        parcel['entropy_coef'] = entropy_coef
 
         losses_rnd = []
         losses_actor = []
         losses_critic = []
         losses_critic_int = []
+        entropies = []
         for epoch in range(4):
             for o, adv_ext, v_ext, act, l_p, next_obs, v_int, adv_int in islice(dl, None):
 
-                fixed_random_values = fixed_random(next_obs[:, -1:, :, :])
-                rnd_values = rnd(next_obs[:, -1:, :, :])
+                last_frame = next_obs[:, -1:, :, :]
+
+                fixed_random_values = fixed_random(last_frame)
+                rnd_values = rnd(last_frame)
 
                 # optimize rnd
 
@@ -432,6 +434,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                 action_dist = dist.Categorical(logits=logits)
                 log_probs = action_dist.log_prob(act)
                 entropy = action_dist.entropy()
+                entropies.append(entropy.mean().item())
 
                 # assert probs.shape == probs_batch_tensor.shape, f'{probs.shape=}, {probs_batch_tensor.shape=}'
 
@@ -441,10 +444,11 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                 loss1 = ratio * adv_ext
                 loss2 = torch.clip(ratio, 1. - clip_coef, 1. + clip_coef) * adv_ext
 
-                coef_int = 0.5 #  if timesteps > 50_000 else 0.0
-                coef_ext = 1.0
-
-                loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * adv_int.mean() -entropy_coef * entropy.mean())# we want to maximize
+                loss = -(
+                    coef_ext * torch.min(loss1, loss2).mean()
+                    + coef_int * adv_int.mean()
+                    - entropy_coef * entropy.mean()
+                )  # we want to maximize
 
                 losses_actor.append(loss.item())
 
@@ -479,6 +483,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
         parcel['loss_actor'] = sum(losses_actor) / len(losses_actor)
         parcel['loss_critic'] = sum(losses_critic) / len(losses_critic)
         parcel['loss_critic_int'] = sum(losses_critic_int) / len(losses_critic_int)
+        parcel['entropy'] = sum(entropies) / len(entropies)
 
     def reset_if_needed(parcel: dict):
         terminated = parcel.pop('terminated', False)
@@ -495,19 +500,25 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                 statistics_collector.clear_entries()
                 if len(rewards) > 0:
                     mean_reward = sum(rewards) / len(rewards)
-                    parcel['mean_reward'] = mean_reward
+                    parcel['mean_ext_reward'] = mean_reward
                 parcel['episode_length'] = len(rewards)
 
         with (tp_utils.StepsTracker(total_timesteps, desc="steps") as steps_tracker,
               tp_tb_utils.Logging(
                  path=f"runs/{gym_environment}_rnd_{optuna_trial.datetime_start.strftime('%Y_%B_%d__%H_%M%p')}_study_{optuna_trial.study.study_name}_trial_no_{optuna_trial.number}",
                  track=[
-                    'mean_reward',
+                    'mean_ext_reward',
+                    'mean_int_reward',
                     'episode_length',
                     'loss_rnd',
                     'loss_actor',
                     'loss_critic',
                     'loss_critic_int',
+                    'entropy',
+                    'log_prob_mean',
+                    'coef_int',
+                    'coef_ext',
+                    'entropy_coef',
                  ]) as logging):
             yield functools.partial(tp_gym_utils.call_reset, env=env)
             yield steps_tracker # initialization to 0
@@ -525,7 +536,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                     logging,
                     functools.partial(
                         tp_utils.call_after_every,
-                        every_x_steps=5000,
+                        every_x_steps=5000 if should_record_video else total_timesteps + 1,
                         protected=functools.partial(record_video, videos_path=videos_path)
                     ),
                     steps_tracker, # can raise Done
@@ -534,14 +545,14 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
             ])
 
     train_assembly = tp.Assembly(get_train_participants)
-    
+
     train_assembly.launch()
 
     print(f'{learn.times_called=}')
     print(f'{learn.ns_elapsed=}')
 
 
-def create_network(state_space, action_space, env, use_batch_normilization) -> Tuple[
+def create_network(state_space, action_space, env) -> Tuple[
         StateToActionLogits,
         StateToValue,
         StateToRND,
@@ -559,9 +570,7 @@ def create_network(state_space, action_space, env, use_batch_normilization) -> T
 
 
 def create_network_with_optuna_trial(optuna_trial, state_space, action_space, env):
-    use_batch_normilization = optuna_trial.suggest_categorical("use_batch_normilization", [False, True])
-
-    return create_network(state_space, action_space, env, use_batch_normilization)
+    return create_network(state_space, action_space, env)
 
 
 def optuna_objective(optuna_trial):
@@ -589,7 +598,9 @@ def optuna_objective(optuna_trial):
     print("before training")
     print(f'{mean_reward_before_train=}')
 
-    train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total_timesteps=400_000) # 4_000_000
+    total_steps = optuna_trial.suggest_int('total_timesteps', 40_000, 400_000, step=10_000)
+
+    train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total_timesteps=total_steps)
 
     mean_reward_after_train = evaluate(env, actor, episodes_for_evaluation)
     print("after training")
@@ -609,9 +620,30 @@ def main():
         load_if_exists=True,
     )
 
+    trials = [{
+        'total_timesteps': 40_000,
+        'record_video': False,
+    } for _ in range(10)]
+    optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
+    optuna_study.enqueue_trial(trials)
+
+    trials = [{
+        'total_timesteps': 80_000,
+        'record_video': False,
+    } for _ in range(5)]
+    optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
+    optuna_study.enqueue_trial(trials)
+
+    trials = [{
+        'total_timesteps': 120_000,
+        'record_video': False,
+    } for _ in range(2)]
+    optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
+    optuna_study.enqueue_trial(trials)
+
     optuna_study.enqueue_trial({
-        'use_batch_normilization': False,
-        # 'total_timesteps': 40_000,
+        'total_timesteps': 400_000,
+        'record_video': True,
     })
     optuna_study.optimize(optuna_objective, n_trials=1)
 

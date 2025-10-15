@@ -1,4 +1,6 @@
+from functools import wraps
 from pprint import pprint
+import time
 from typing import Generator, List, Sequence
 from tqdm import tqdm
 import numpy as np
@@ -141,33 +143,16 @@ def compute_gae(rewards, values, gamma=0.99, lambda_=0.95):
 
 # # advantages = compute_gae(rewards, values, gamma, lambda_)
 
-# def compute_gae(rewards, values, dones=None, gamma=0.99, lambda_=0.95): # TODO: ??? (re: does it really work re: terminated/truncated)
-#     advantages = np.zeros_like(rewards)
-#     gae = 0
-#     for t in reversed(range(len(rewards))):
-#         next_value = values[t + 1] if t + 1 < len(values) else 0
-#         done = dones[t] if dones is not None else 0
-#         delta = rewards[t] + gamma * next_value * (1 - done) - values[t]
-#         gae = delta + gamma * lambda_ * (1 - done) * gae
-#         advantages[t] = gae
-#     return advantages
 
-# def compute_gae(rewards, values, terminated, truncated, gamma=0.99, lambda_=0.95):
-#     assert len(values) - len(rewards) == 1, f'{len(values)=}, {len(rewards)=}'
-#     advantages = np.zeros_like(rewards)
-#     gae = 0
-#     for t in reversed(range(len(rewards))):
-#       next_value = values[t + 1]
-#       done = terminated[t] or truncated[t]
-#       delta = rewards[t] + gamma * next_value * (1 - done) - values[t]
-#       gae = delta + gamma * lambda_ * (1 - done) * gae
-#       advantages[t] = gae
-#     return advantages
-#     gae = 0
-#     for t in reversed(range(len(rewards))):
-#         next_value = values[t + 1] if t + 1 < len(values) else 0
-#         done = dones[t] if dones is not None else 0
-#         delta = rewards[t] + gamma * next_value * (1 - done) - values[t]
-#         gae = delta + gamma * lambda_ * (1 - done) * gae
-#         advantages[t] = gae
-#     return advantages
+def track_calls(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        before = time.time_ns()
+        ret = func(*args, **kwargs)
+        ns_elapsed = time.time_ns() - before
+        wrapper.times_called += 1
+        wrapper.ns_elapsed += ns_elapsed
+        return ret 
+    wrapper.times_called = 0
+    wrapper.ns_elapsed = 0
+    return wrapper

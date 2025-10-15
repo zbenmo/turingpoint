@@ -1,5 +1,4 @@
 from pprint import pprint
-import time
 from typing import Callable, Iterable, Iterator, Union
 from .definitions import Participant, Done
 
@@ -42,11 +41,7 @@ class Assembly:
       for participant in self._get_participants():
         if participant is None:
           continue
-        before = time.time_ns()
         participant(parcel)
-        ns_elapsed = time.time_ns() - before
-        participant.ns_elapsed = (0 if not hasattr(participant, 'ns_elapsed') else participant.ns_elapsed) + ns_elapsed
-        participant.times_called = (0 if not hasattr(participant, 'times_called') else participant.times_called) + 1
     except Done:
       pass
     except:

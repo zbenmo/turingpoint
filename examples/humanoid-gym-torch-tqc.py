@@ -276,6 +276,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
     alpha = torch.nn.Parameter(torch.tensor(0.1), requires_grad=True)
     optimizer_alpha = torch.optim.Adam([alpha], lr=1e-3)
 
+    @tp_utils.track_calls
     def learn(parcel: dict):
 
         def bound_qvalue(q_value: 'torch.Tensor') -> 'torch.Tensor':

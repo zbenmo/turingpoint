@@ -1,17 +1,20 @@
 from typing import Generator
 from turingpoint.assembly import Assembly
 from turingpoint.definitions import Participant
-from turingpoint.utils import print_parcel
+from turingpoint.utils import print_parcel, track_calls
 
 
 def different_frequencies():
   
+  @track_calls
   def participant1(parcel: dict) -> None:
     parcel['participant1'] = parcel.get('participant1', 0) + 1
 
+  @track_calls
   def participant2(parcel: dict) -> None:
     parcel['participant2'] = parcel.get('participant2', 0) + 1
 
+  @track_calls
   def participant3(parcel: dict) -> None:
     parcel['participant3'] = parcel.get('participant3', 0) + 1
 

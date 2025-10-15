@@ -279,6 +279,7 @@ def train(optuna_trial, env, actor: StateToActionDistributionParams, critics: Li
     #         target_entropy = -10
     #     parcel['target_entropy'] = target_entropy
 
+    @tp_utils.track_calls
     def learn(parcel: dict):
 
         def bound_qvalue(q_value: 'torch.Tensor') -> 'torch.Tensor':
