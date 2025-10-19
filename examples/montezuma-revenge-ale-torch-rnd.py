@@ -8,6 +8,7 @@ from typing import Dict, Generator, List, Sequence, Tuple
 import numpy as np
 import optuna
 import ale_py
+from gymnasium.vector.sync_vector_env import SyncVectorEnv
 import gymnasium as gym
 from gymnasium.wrappers import FrameStackObservation
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
@@ -86,10 +87,11 @@ class StateToValue(nn.Module):
             nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
             nn.Linear(512, 1),
+            nn.Softplus(),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        """obs -> value (a regression)"""
+        """obs -> non-negagive value (a regression)"""
 
         return self.net(obs)
 
@@ -118,7 +120,7 @@ class StateToRND(nn.Module):
         return self.net(obs)
 
 
-def make_env(**kwargs) -> gym.Env:
+def make_env(seed, **kwargs) -> gym.Env:
     env = gym.make(gym_environment, frameskip=1, **kwargs) # (210, 160, 3)
     env = AtariPreprocessing(
         env,
@@ -130,6 +132,7 @@ def make_env(**kwargs) -> gym.Env:
         scale_obs=True,
     )
     env = FrameStackObservation(env, stack_size=4)
+    env.reset(seed=seed)
 
     return env
 
@@ -139,15 +142,35 @@ def get_action(parcel: Dict, *, agent: StateToActionLogits):
     Just needs to account for the fact the the agent actually returns logits rather than probabilities.
     """
     obs = parcel['obs']
+    obs_tensor = torch.tensor(obs)
+    obs_tensor = obs_tensor.reshape(-1, *obs_tensor.shape[-3:]) # from batch x num envs x ..rest to (batch x num envs) x ..rest
     with torch.no_grad():
-        logits = agent(torch.tensor(obs).unsqueeze(0))
+        logits = agent(obs_tensor)
         action_dist = dist.Categorical(logits=logits)
         if random.random() < parcel.get('epsilon', 0.0):
             action = torch.tensor(random.randrange(agent.out_features))
         else:
             action = action_dist.sample()
-        parcel['action'] = action.item()
+        parcel['action'] = action.numpy()
         parcel['log_prob'] = action_dist.log_prob(action) # may be useful for the training (note: still a tensor)
+
+
+def get_single_action(parcel: Dict, *, agent: StateToActionLogits):
+    """Picks a random action based on the probabilities that the agent assigns.
+    Just needs to account for the fact the the agent actually returns logits rather than probabilities.
+    """
+    obs = parcel['obs']
+    with torch.no_grad():
+        obs_tensor = torch.tensor(obs)
+        obs_tensor = obs_tensor.unsqueeze(0)
+        logits = agent(obs_tensor)
+        action_dist = dist.Categorical(logits=logits)
+        # if random.random() < parcel.get('epsilon', 0.0):
+        #     action = torch.tensor(random.randrange(agent.out_features))
+        # else:
+        action = action_dist.sample()
+        parcel['action'] = action.item()
+        # parcel['log_prob'] = action_dist.log_prob(action) # may be useful for the training (note: still a tensor)
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
@@ -159,7 +182,7 @@ def evaluate(env, agent, num_episodes: int) -> float:
     def get_participants():
         yield functools.partial(tp_gym_utils.call_reset, env=env)
         yield from itertools.cycle([
-                functools.partial(get_action, agent=agent),
+                functools.partial(get_single_action, agent=agent),
                 functools.partial(tp_gym_utils.call_step, env=env),
                 rewards_collector,
                 tp_gym_utils.check_done
@@ -180,46 +203,50 @@ videos_path = Path("videos")
 videos_path.mkdir(exist_ok=True)
 
 
-class RunningMeanStd:
-    def __init__(self, epsilon=1e-4, shape=()):
-        self.mean = np.zeros(shape, 'float64')
-        self.var = np.ones(shape, 'float64')
-        self.count = epsilon
+# class RunningMeanStd:
+#     def __init__(self, epsilon=1e-4, shape=()):
+#         self.mean = np.zeros(shape, 'float64')
+#         self.var = np.ones(shape, 'float64')
+#         self.count = epsilon
 
-    def update(self, x):
-        batch_mean = np.mean(x)
-        batch_var = np.var(x)
-        batch_count = len(x)
-        self._update_from_moments(batch_mean, batch_var, batch_count)
+#     def update(self, x):
+#         batch_mean = np.mean(x)
+#         batch_var = np.var(x)
+#         batch_count = len(x)
+#         self._update_from_moments(batch_mean, batch_var, batch_count)
 
-    def _update_from_moments(self, batch_mean, batch_var, batch_count):
-        delta = batch_mean - self.mean
-        tot_count = self.count + batch_count
+#     def _update_from_moments(self, batch_mean, batch_var, batch_count):
+#         delta = batch_mean - self.mean
+#         tot_count = self.count + batch_count
 
-        new_mean = self.mean + delta * batch_count / tot_count
-        m_a = self.var * self.count
-        m_b = batch_var * batch_count
-        M2 = m_a + m_b + delta ** 2 * self.count * batch_count / tot_count
-        new_var = M2 / tot_count
-        new_count = tot_count
+#         new_mean = self.mean + delta * batch_count / tot_count
+#         m_a = self.var * self.count
+#         m_b = batch_var * batch_count
+#         M2 = m_a + m_b + delta ** 2 * self.count * batch_count / tot_count
+#         new_var = M2 / tot_count
+#         new_count = tot_count
 
-        self.mean = new_mean
-        self.var = new_var
-        self.count = new_count
+#         self.mean = new_mean
+#         self.var = new_var
+#         self.count = new_count
 
-    @property
-    def std(self):
-        return np.sqrt(self.var)
+#     @property
+#     def std(self):
+#         return np.sqrt(self.var)
 
 
-def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total_timesteps):
+time_steps = 128 # for each learning round
+num_envs = 8 # vectorized env
+
+
+def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, total_timesteps):
 
     actor.train()
     critic.train()
     rnd.train()
     critic_int.train()
 
-    rendering_env = make_env(render_mode="rgb_array_list", max_episode_steps=1_000)
+    rendering_env = make_env(seed=1, render_mode="rgb_array_list", max_episode_steps=1_000)
 
     def record_video(parcel: dict, videos_path: Path):
         """Renders a one episode video."""
@@ -232,7 +259,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
             yield functools.partial(tp_gym_utils.call_reset, env=rendering_env)
             yield from itertools.cycle([
                 # FrameStack(),
-                functools.partial(get_action, agent=actor),
+                functools.partial(get_single_action, agent=actor),
                 functools.partial(tp_gym_utils.call_step, env=rendering_env),
                 tp_gym_utils.check_done,
             ])
@@ -306,7 +333,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
     def extract_lists_from_generator_of_dicts(generator_of_dicts: Generator[Dict, None, None], keys: Sequence[str]) -> Sequence[List]:
         return tuple(map(list, zip(*((e[k] for k in keys) for e in generator_of_dicts))))
 
-    intrinsic_rms = RunningMeanStd()
+    # intrinsic_rms = RunningMeanStd()
 
     @tp_utils.track_calls
     def learn(parcel: dict):
@@ -316,15 +343,40 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
         )
         collector.clear_entries()
 
-        obs_tensor = torch.tensor(np.array(obs))
-        action_tensor = torch.tensor(action)
-        reward_tensor = torch.tensor(reward, dtype=torch.float32)
-        log_prob_tensor = torch.tensor(log_prob)
-        next_obs_tensor = torch.tensor(np.array(next_obs))
+        assert len(obs) == time_steps, f'{len(obs)=}'
 
-        assert len(obs) == 128, f'{len(obs)=}'
+        obs_tensor = torch.tensor(np.array(obs))
+        obs_tensor = obs_tensor.reshape(-1, *obs_tensor.shape[2:])
+
+        assert obs_tensor.shape == (time_steps * num_envs, 4, 84, 84), f'{obs_tensor.shape=}'
+
+        action_tensor = torch.tensor(np.array(action))
+        action_tensor = action_tensor.reshape(-1)
+
+        assert action_tensor.shape == (time_steps * num_envs,), f'{action_tensor.shape=}'
+
+        reward_tensor = torch.tensor(np.array(reward), dtype=torch.float32)
+        reward_tensor = reward_tensor.reshape(-1)
+
+        assert reward_tensor.shape == (time_steps * num_envs,), f'{reward_tensor.shape=}'
+
+        log_prob_tensor = torch.tensor(np.array(log_prob))
+        log_prob_tensor = log_prob_tensor.reshape(-1)
+
+        assert log_prob_tensor.shape == (time_steps * num_envs,), f'{log_prob_tensor.shape=}'
+
+        next_obs_tensor = torch.tensor(np.array(next_obs))
+        next_obs_tensor = next_obs_tensor.reshape(-1, *next_obs_tensor.shape[2:])
+
+        assert next_obs_tensor.shape == (time_steps * num_envs, 4, 84, 84), f'{next_obs_tensor.shape=}'
 
         parcel['log_prob_mean'] = log_prob_tensor.mean().item()
+
+        for trunc, term in zip(truncated, terminated):
+            trunc[-1] = not term[-1]
+
+        terminated = np.array(terminated).reshape(-1)
+        truncated = np.array(truncated).reshape(-1)
 
         done_flags = np.logical_or(terminated, truncated)
         episode_fragment_index = np.cumsum(done_flags)
@@ -360,6 +412,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
 
         values_int_batch = []
         advantage_int_batch = []
+        rewards_ints = []
 
         with torch.no_grad():
             for _, group in groupby(range(len(episode_fragment_index)), key=lambda i: episode_fragment_index[i]):
@@ -374,11 +427,9 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                     values_int = critic_int(relevant_next_obs).squeeze(-1).cpu().tolist()
                     values_int.append(0.)
                 rewards_int = calc_intrinsic_reward(relevant_next_obs[:, -1:, :, :], fixed_random, rnd)
-                rewards_int_np = rewards_int.cpu().numpy()
-                rewards_int_norm = (rewards_int_np - intrinsic_rms.mean) / (intrinsic_rms.std + 1e-8)
-                rewards_int_norm = np.clip(rewards_int_norm, -5, 5)
+                rewards_ints.extend(rewards_int.cpu().tolist())
                 values_int_batch.extend(r + discount * v for r, v in zip(rewards_int, values_int[1:]))
-                advantages_int = tp_utils.compute_gae(rewards_int_norm, values_int, gamma=discount, lambda_=gae_int)
+                advantages_int = tp_utils.compute_gae(rewards_int, values_int, gamma=discount, lambda_=gae_int)
                 advantage_int_batch.extend(advantages_int.tolist())
 
         advantages_ext_tensor = torch.tensor(advantage_ext_batch)
@@ -386,7 +437,10 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
         values_int_tensor = torch.tensor(values_int_batch, dtype=torch.float32)
         advantages_int_tensor = torch.tensor(advantage_int_batch)
 
-        parcel['mean_int_reward'] = advantages_int_tensor.mean().item()
+        parcel['mean_int_reward'] = np.mean(rewards_ints)
+        parcel['values_ext'] = values_ext_tensor.mean().item()
+        parcel['values_int'] = values_int_tensor.mean().item()
+        parcel['advantages_int'] = advantages_int_tensor.mean().item()
 
         ds = TensorDataset(
             obs_tensor,
@@ -398,7 +452,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
             values_int_tensor,
             advantages_int_tensor,
         )
-        dl = DataLoader(ds, batch_size=64, shuffle=True) # 256
+        dl = DataLoader(ds, batch_size=256, shuffle=True)
 
         parcel['coef_int'] = coef_int
         parcel['coef_ext'] = coef_ext
@@ -410,7 +464,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
         losses_critic_int = []
         entropies = []
         for epoch in range(4):
-            for o, adv_ext, v_ext, act, l_p, next_obs, v_int, adv_int in islice(dl, None):
+            for o, adv_ext, v_ext, act, l_p, next_obs, v_int, adv_int in islice(dl, None): # 128*8/256=4
 
                 last_frame = next_obs[:, -1:, :, :]
 
@@ -447,7 +501,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                 loss = -(
                     coef_ext * torch.min(loss1, loss2).mean()
                     + coef_int * adv_int.mean()
-                    - entropy_coef * entropy.mean()
+                    + entropy_coef * entropy.mean()
                 )  # we want to maximize
 
                 losses_actor.append(loss.item())
@@ -485,18 +539,12 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
         parcel['loss_critic_int'] = sum(losses_critic_int) / len(losses_critic_int)
         parcel['entropy'] = sum(entropies) / len(entropies)
 
-    def reset_if_needed(parcel: dict):
-        terminated = parcel.pop('terminated', False)
-        truncated = parcel.pop('truncated', False)
-        if terminated or truncated:
-            tp_gym_utils.call_reset(parcel, env=env)
-
     def get_train_participants():
         statistics_collector = tp_utils.Collector(['reward'])
 
         def set_statistics(parcel: dict):
-            if parcel.get('terminated', False) or parcel.get('truncated', False):
-                rewards = [x['reward'] for x in statistics_collector.get_entries()]
+            if parcel.get('terminated')[0] or parcel.get('truncated')[0]:
+                rewards = [x['reward'][0] for x in statistics_collector.get_entries()]
                 statistics_collector.clear_entries()
                 if len(rewards) > 0:
                     mean_reward = sum(rewards) / len(rewards)
@@ -509,6 +557,9 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                  track=[
                     'mean_ext_reward',
                     'mean_int_reward',
+                    'values_ext',
+                    'values_int',
+                    'advantages_int'
                     'episode_length',
                     'loss_rnd',
                     'loss_actor',
@@ -520,17 +571,17 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                     'coef_ext',
                     'entropy_coef',
                  ]) as logging):
-            yield functools.partial(tp_gym_utils.call_reset, env=env)
+            yield functools.partial(tp_gym_utils.call_reset, env=vec_env)
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
                     functools.partial(get_action, agent=actor),
-                    functools.partial(tp_gym_utils.call_step, env=env, save_obs_as="next_obs"),
+                    functools.partial(tp_gym_utils.call_step, env=vec_env, save_obs_as="next_obs"),
                     collector,
                     statistics_collector,
                     set_statistics,
                     functools.partial(
                         tp_utils.call_after_every,
-                        every_x_steps=128,
+                        every_x_steps=time_steps,
                         protected=learn
                     ),
                     logging,
@@ -541,7 +592,9 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
                     ),
                     steps_tracker, # can raise Done
                     advance,
-                    reset_if_needed,
+                    functools.partial(
+                        tp_gym_utils.call_reset_done, vec_env=vec_env
+                    ),
             ])
 
     train_assembly = tp.Assembly(get_train_participants)
@@ -552,7 +605,7 @@ def train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total
     print(f'{learn.ns_elapsed=}')
 
 
-def create_network(state_space, action_space, env) -> Tuple[
+def create_network(state_space, action_space) -> Tuple[
         StateToActionLogits,
         StateToValue,
         StateToRND,
@@ -569,8 +622,8 @@ def create_network(state_space, action_space, env) -> Tuple[
     return actor, critic, fixed_random, rnd, critic_int
 
 
-def create_network_with_optuna_trial(optuna_trial, state_space, action_space, env):
-    return create_network(state_space, action_space, env)
+def create_network_with_optuna_trial(optuna_trial, state_space, action_space):
+    return create_network(state_space, action_space)
 
 
 def optuna_objective(optuna_trial):
@@ -581,28 +634,26 @@ def optuna_objective(optuna_trial):
 
     gym.register_envs(ale_py)
 
-    env = make_env(max_episode_steps=18_000)
-
-    env.reset(seed=1)
+    vec_env = SyncVectorEnv([functools.partial(make_env, seed=seed, max_episode_steps=18_000) for seed in range(num_envs)])
 
     # state and obs/observations are used in this example interchangably.
 
-    state_space = env.observation_space.shape[0]
-    action_space = env.action_space.n
+    state_space = vec_env.single_observation_space.shape[0]
+    action_space = vec_env.single_action_space.n
 
-    actor, critic, fixed_random, rnd, critic_int = create_network_with_optuna_trial(optuna_trial, state_space, action_space, env)
+    actor, critic, fixed_random, rnd, critic_int = create_network_with_optuna_trial(optuna_trial, state_space, action_space)
 
     episodes_for_evaluation = 10
 
-    mean_reward_before_train = evaluate(env, actor, episodes_for_evaluation)
+    mean_reward_before_train = evaluate(vec_env.envs[0], actor, episodes_for_evaluation)
     print("before training")
     print(f'{mean_reward_before_train=}')
 
     total_steps = optuna_trial.suggest_int('total_timesteps', 40_000, 400_000, step=10_000)
 
-    train(optuna_trial, env, actor, critic, fixed_random, rnd, critic_int, total_timesteps=total_steps)
+    train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, total_timesteps=total_steps)
 
-    mean_reward_after_train = evaluate(env, actor, episodes_for_evaluation)
+    mean_reward_after_train = evaluate(vec_env.envs[0], actor, episodes_for_evaluation)
     print("after training")
     print(f'{mean_reward_after_train=}')
 
@@ -620,28 +671,31 @@ def main():
         load_if_exists=True,
     )
 
-    trials = [{
-        'total_timesteps': 40_000,
-        'record_video': False,
-    } for _ in range(10)]
-    optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
-    optuna_study.enqueue_trial(trials)
+    # trials = [{
+    #     'total_timesteps': 40_000,
+    #     'record_video': False,
+    # } for _ in range(10)]
+    # optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
+    # optuna_study.enqueue_trial(trials)
 
-    trials = [{
-        'total_timesteps': 80_000,
-        'record_video': False,
-    } for _ in range(5)]
-    optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
-    optuna_study.enqueue_trial(trials)
+    # trials = [{
+    #     'total_timesteps': 80_000,
+    #     'record_video': False,
+    # } for _ in range(5)]
+    # optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
+    # optuna_study.enqueue_trial(trials)
 
-    trials = [{
-        'total_timesteps': 120_000,
-        'record_video': False,
-    } for _ in range(2)]
-    optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
-    optuna_study.enqueue_trial(trials)
+    # trials = [{
+    #     'total_timesteps': 120_000,
+    #     'record_video': False,
+    # } for _ in range(2)]
+    # optuna_study.optimize(optuna_objective, n_trials=len(trials), gc_after_trial=True)
+    # optuna_study.enqueue_trial(trials)
 
     optuna_study.enqueue_trial({
+        'entropy_coef' : 0.001,
+        'coef_int': 0.5,
+        'coef_ext': 1.0,
         'total_timesteps': 400_000,
         'record_video': True,
     })

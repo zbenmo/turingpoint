@@ -370,7 +370,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
             # Now learn from above episodes
 
             # disclaimer: a lot more of vectorization can be done here.
-            # potentially a usage of pandas/polars, numpy, or torch. 
+            # potentially a usage of pandas/polars, numpy, or torch.
             # I'm KISSing it here.
 
             obs_batch = []
@@ -479,7 +479,11 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
                     coef_int = 0.5 if timesteps > 50_000 else 0.0
                     coef_ext = 1.0
 
-                    loss = -(coef_ext * torch.min(loss1, loss2).mean() + coef_int * adv_int.mean() -entropy_coef * entropy.mean())# we want to maximize
+                    loss = -(
+                        coef_ext * torch.min(loss1, loss2).mean()
+                        + coef_int * adv_int.mean()
+                        + entropy_coef * entropy.mean()
+                    )  # we want to maximize
 
                     loss.backward()
 
@@ -513,7 +517,7 @@ def train(optuna_trial, env, agent, critic, fixed_random, rnd, critic_int, total
 
             writer.add_scalar("Mean Rewards", np.mean(total_rewards), timesteps)
             writer.add_scalar("RND intrinsic reward running mean", intrinsic_rms.mean, timesteps)
-                # print(f'RND intrinsic reward running mean: {intrinsic_rms.mean}, std: {intrinsic_rms.std}')
+            # print(f'RND intrinsic reward running mean: {intrinsic_rms.mean}, std: {intrinsic_rms.std}')
             writer.add_scalar("entropy_coef", entropy_coef, timesteps)
 
             pbar.update(len(advantages_ext_tensor))
@@ -615,4 +619,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
