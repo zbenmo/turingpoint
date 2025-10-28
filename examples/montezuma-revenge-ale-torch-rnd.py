@@ -26,6 +26,15 @@ import turingpoint.torch_utils as tp_torch_utils
 import turingpoint.tensorboard_utils as tp_tb_utils
 
 
+from line_profiler import profile
+
+
+# add device selection and CUDA tuning
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if device.type == "cuda":
+    torch.backends.cudnn.benchmark = True
+
+
 gym_environment = "ALE/MontezumaRevenge-v5"
 
 
@@ -41,7 +50,7 @@ class CNNLayers(nn.Module):
             cnn_layers.append(nn.ReLU())
             in_channels = out_channels
             out_size = (out_size - kernel_size) // stride + 1
-        self.num_ele = out_channels * out_size.prod()
+        self.num_ele = (out_channels * out_size.prod()).item()
         assert self.num_ele == 3136, f'{out_channels=}, {out_size=}'
         self.net = nn.Sequential(
             *cnn_layers,
@@ -52,7 +61,7 @@ class CNNLayers(nn.Module):
         """obs -> value (a regression)"""
 
         return self.net(obs)
-    
+
     @property
     def num_elements(self) -> int:
         return self.num_ele
@@ -66,7 +75,7 @@ class StateToActionLogits(nn.Module):
             self.cnn_layers,
             nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
-            nn.Linear(512, out_features),
+            nn.Linear(512, out_features.item()),
         )
         self.out_features = out_features # keep for the range of actions
 
@@ -358,6 +367,7 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
     intrinsic_rms = RunningMeanStd()
 
     @tp_utils.track_calls
+    @profile
     def learn(parcel: dict):
         obs, action, reward, log_prob, next_obs, terminated, truncated = extract_lists_from_generator_of_dicts(
             generator_of_dicts=collector.get_entries(),
@@ -377,27 +387,25 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
 
         next_obs = preprocess_observation(next_obs)
 
-        obs_tensor = torch.tensor(obs)
-        obs_tensor = obs_tensor.reshape(-1, *obs_tensor.shape[2:])
+        # obs_tensor = torch.tensor(obs)
+        # obs_tensor = obs_tensor.reshape(-1, *obs_tensor.shape[2:])
+        obs_tensor = torch.from_numpy(obs).reshape(-1, *obs.shape[2:]).to(device, non_blocking=True)
 
         assert obs_tensor.shape == (time_steps * num_parallel_envs, 4, 84, 84), f'{obs_tensor.shape=}'
 
-        action_tensor = torch.tensor(np.array(action))
-        action_tensor = action_tensor.reshape(-1)
+        action_tensor = torch.from_numpy(np.array(action)).reshape(-1).to(device, non_blocking=True)
 
         assert action_tensor.shape == (time_steps * num_parallel_envs,), f'{action_tensor.shape=}'
 
-        reward_tensor = torch.tensor(np.array(reward), dtype=torch.float32)
-        reward_tensor = reward_tensor.reshape(-1)
+        reward_tensor = torch.from_numpy(np.array(reward, dtype=np.float32)).reshape(-1).to(device, non_blocking=True)
 
         assert reward_tensor.shape == (time_steps * num_parallel_envs,), f'{reward_tensor.shape=}'
 
-        log_prob_tensor = torch.tensor(np.array(log_prob))
-        log_prob_tensor = log_prob_tensor.reshape(-1)
+        log_prob_tensor = torch.from_numpy(np.array(log_prob, dtype=np.float32)).reshape(-1).to(device, non_blocking=True)
 
         assert log_prob_tensor.shape == (time_steps * num_parallel_envs,), f'{log_prob_tensor.shape=}'
 
-        next_obs_tensor = torch.tensor(next_obs)
+        next_obs_tensor = torch.from_numpy(next_obs).to(device, non_blocking=True)
         # next_obs_tensor = next_obs_tensor.reshape(-1, *next_obs_tensor.shape[2:])
 
         assert next_obs_tensor.shape == (time_steps * num_parallel_envs, 4, 84, 84), f'{next_obs_tensor.shape=}'
@@ -446,8 +454,10 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
         advantage_int_batch = []
         rewards_ints = []
 
-        orig_next_obs_tensor = torch.tensor(orig_next_obs)
-        orig_next_obs_tensor = (orig_next_obs_tensor - intrinsic_rms.mean) / (intrinsic_rms.std + 1e-8)
+        orig_next_obs_tensor = torch.from_numpy(orig_next_obs).to(device, non_blocking=True)
+        mean = torch.tensor(intrinsic_rms.mean, dtype=torch.float32, device=device)
+        std = torch.tensor(intrinsic_rms.std, dtype=torch.float32, device=device)
+        orig_next_obs_tensor = (orig_next_obs_tensor - mean) / (std + 1e-8)
         orig_next_obs_tensor = orig_next_obs_tensor.clamp(-5.0, 5.0)
 
         with torch.no_grad():
@@ -652,12 +662,26 @@ def create_network(state_space, action_space) -> Tuple[
         StateToValue,
     ]:
     actor = StateToActionLogits(state_space, action_space)
+    actor = torch.jit.script(actor)
+    actor = actor.to(device)
+
     critic = StateToValue(state_space)
+    critic = torch.jit.script(critic)
+    critic = critic.to(device)
+
     fixed_random = StateToRND()
     for param in fixed_random.parameters():
         param.requires_grad = False
+    fixed_random = torch.jit.script(fixed_random)
+    fixed_random = fixed_random.to(device)
+
     rnd = StateToRND_Predictor() # this is refered to as "predictor" in the paper
+    rnd = torch.jit.script(rnd)
+    rnd = rnd.to(device)
+
     critic_int = StateToValue(state_space, in_channels=1)
+    critic_int = torch.jit.script(critic_int)
+    critic_int = critic_int.to(device)
     return actor, critic, fixed_random, rnd, critic_int
 
 
