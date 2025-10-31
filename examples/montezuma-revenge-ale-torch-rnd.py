@@ -8,6 +8,7 @@ from typing import Dict, Generator, List, Sequence, Tuple
 import numpy as np
 import optuna
 import ale_py
+from tqdm import tqdm, trange
 from gymnasium.vector.sync_vector_env import SyncVectorEnv
 import gymnasium as gym
 from gymnasium.wrappers import FrameStackObservation
@@ -40,14 +41,14 @@ gym_environment = "ALE/MontezumaRevenge-v5"
 
 class CNNLayers(nn.Module):
     """CNN layers after each there is a non-linearity (ReLU), and also a flattening at the end."""
-    def __init__(self, in_channels, *args, **kwargs):
+    def __init__(self, in_channels, activ=nn.ReLU, *args, **kwargs):
         super().__init__(*args, **kwargs)
         cnn_layers = []
         in_channels = in_channels # for 4 frames (history), 1 for a single frame
         out_size = np.array((84, 84))
         for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
             cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
-            cnn_layers.append(nn.ReLU())
+            cnn_layers.append(activ())
             in_channels = out_channels
             out_size = (out_size - kernel_size) // stride + 1
         self.num_ele = (out_channels * out_size.prod()).item()
@@ -94,7 +95,7 @@ class StateToValue(nn.Module):
             nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
             nn.Linear(512, 1),
-            nn.Softplus(),
+            # nn.Softplus(),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -106,7 +107,7 @@ class StateToValue(nn.Module):
 class StateToRND(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cnn_layer = CNNLayers(in_channels=1)
+        self.cnn_layer = CNNLayers(in_channels=1, activ=nn.LeakyReLU)
         latent_dim = 128
         std = np.sqrt(2)
         bias_const = 0.0
@@ -129,7 +130,7 @@ class StateToRND(nn.Module):
 class StateToRND_Predictor(nn.Module): # Renamed for clarity
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cnn_layer = CNNLayers(in_channels=1) # Same CNN backbone
+        self.cnn_layer = CNNLayers(in_channels=1, activ=nn.LeakyReLU) # Same CNN backbone
         latent_dim = 128
 
         # Predictor Network (deeper, trained)
@@ -150,7 +151,7 @@ def preprocess_observation(obs: np.ndarray) -> np.ndarray:
 
 
 def make_env(seed, **kwargs) -> gym.Env:
-    env = gym.make(gym_environment, frameskip=1, **kwargs) # (210, 160, 3)
+    env = gym.make(gym_environment, frameskip=4, **kwargs) # (210, 160, 3)
     env = AtariPreprocessing(
         env,
         noop_max=30,
@@ -329,18 +330,18 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
     def advance(parcel: dict):
         parcel['obs'] = parcel.pop('next_obs')
 
-    normilize_the_rewards = False
+    normilize_the_rewards = True
     discount = optuna_trial.suggest_float('discount', 0.95, 0.95) # gamma
     gae = optuna_trial.suggest_float('gae_lambda', 0.999, 0.999) # lambda
     gae_int = optuna_trial.suggest_float('gae_lambda_int', 0.99, 0.99) # lambda for intrinsic rewards
     clip_coef = optuna_trial.suggest_float('clip_coef', 0.1, 0.1)
-    actor_lr = optuna_trial.suggest_float('actor_lr', 2.5e-4, 2.5e-4)
-    critic_lr = optuna_trial.suggest_float('critic_lr', 2.5e-4, 2.5e-4)
+    actor_lr = optuna_trial.suggest_float('actor_lr', 1e-4, 1e-4)
+    critic_lr = optuna_trial.suggest_float('critic_lr', 1e-4, 1e-4)
 
     entropy_coef = optuna_trial.suggest_float('entropy_coef', 0.001, 0.1)
 
-    coef_int = optuna_trial.suggest_float('coef_int', 0.01, 0.5)
-    coef_ext = optuna_trial.suggest_float('coef_ext', 1.0, 1.0)
+    coef_int = optuna_trial.suggest_float('coef_int', 0.01, 1.0)
+    coef_ext = optuna_trial.suggest_float('coef_ext', 1.0, 2.0)
 
     should_record_video = optuna_trial.suggest_categorical('record_video', [False, True])
 
@@ -348,7 +349,7 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
 
     critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
 
-    lr_rnd = optuna_trial.suggest_float("lr_rnd", 5e-4, 5e-4)
+    lr_rnd = optuna_trial.suggest_float("lr_rnd", 5e-5, 5e-5)
 
     optimizer_rnd = torch.optim.Adam(rnd.parameters(), lr=lr_rnd)
 
@@ -364,6 +365,7 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
     def extract_lists_from_generator_of_dicts(generator_of_dicts: Generator[Dict, None, None], keys: Sequence[str]) -> Sequence[List]:
         return tuple(map(list, zip(*((e[k] for k in keys) for e in generator_of_dicts))))
 
+    obs_rms = RunningMeanStd()
     intrinsic_rms = RunningMeanStd()
 
     @tp_utils.track_calls
@@ -383,7 +385,6 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
         next_obs = next_obs.reshape(-1, *next_obs.shape[2:])
 
         orig_next_obs = next_obs[:, -1:, :, :].copy()
-        intrinsic_rms.update(orig_next_obs)
 
         next_obs = preprocess_observation(next_obs)
 
@@ -455,8 +456,8 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
         rewards_ints = []
 
         orig_next_obs_tensor = torch.from_numpy(orig_next_obs).to(device, non_blocking=True)
-        mean = torch.tensor(intrinsic_rms.mean, dtype=torch.float32, device=device)
-        std = torch.tensor(intrinsic_rms.std, dtype=torch.float32, device=device)
+        mean = torch.tensor(obs_rms.mean, dtype=torch.float32, device=device)
+        std = torch.tensor(obs_rms.std, dtype=torch.float32, device=device)
         orig_next_obs_tensor = (orig_next_obs_tensor - mean) / (std + 1e-8)
         orig_next_obs_tensor = orig_next_obs_tensor.clamp(-5.0, 5.0)
 
@@ -473,7 +474,14 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
                     values_int = critic_int(relevant_next_obs).squeeze(-1).cpu().tolist()
                     values_int.append(0.)
                 rewards_int = calc_intrinsic_reward(relevant_next_obs, fixed_random, rnd)
-                rewards_int = rewards_int.numpy()
+                rewards_int = rewards_int.cpu().numpy()
+
+                if normilize_the_rewards:
+                    mean_, std_, count_ = intrinsic_rms.mean, intrinsic_rms.std, intrinsic_rms.count
+                    intrinsic_rms.update(rewards_int)
+                    if count_ > 1:
+                        rewards_int = (rewards_int - mean_) / (std_ + 1e-8)
+
                 rewards_ints.extend(rewards_int.tolist())
                 values_int_batch.extend(r + discount * v for r, v in zip(rewards_int, values_int[1:]))
                 advantages_int = tp_utils.compute_gae(rewards_int, values_int, gamma=discount, lambda_=gae_int)
@@ -489,6 +497,8 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
         parcel['values_int'] = values_int_tensor.mean().item()
         parcel['advantages_int'] = advantages_int_tensor.mean().item()
 
+        obs_rms.update(orig_next_obs)
+
         ds = TensorDataset(
             obs_tensor,
             advantages_ext_tensor,
@@ -499,7 +509,7 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
             values_int_tensor,
             advantages_int_tensor,
         )
-        dl = DataLoader(ds, batch_size=256, shuffle=True)
+        dl = DataLoader(ds, batch_size=512, shuffle=True) # len(obs) // 4
 
         parcel['coef_int'] = coef_int
         parcel['coef_ext'] = coef_ext
@@ -510,8 +520,10 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
         losses_critic = []
         losses_critic_int = []
         entropies = []
-        for epoch in range(4):
-            for o, adv_ext, v_ext, act, l_p, next_obs, v_int, adv_int in islice(dl, None): # 128*32/256=16
+        for epoch in trange(4, desc="learn epochs", position=1, leave=False):
+            for (
+                o, adv_ext, v_ext, act, l_p, next_obs, v_int, adv_int
+             ) in tqdm(dl, desc="minibatches", position=2, leave=False): # 128*32/256=16
 
                 #
 
@@ -590,6 +602,7 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
 
     def get_train_participants():
         statistics_collector = tp_utils.Collector(['reward'])
+        warmup_collector = tp_utils.Collector(['next_obs'])
 
         def set_statistics(parcel: dict):
             if parcel.get('terminated')[0] or parcel.get('truncated')[0]:
@@ -599,6 +612,23 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
                     mean_reward = sum(rewards) / len(rewards)
                     parcel['mean_ext_reward'] = mean_reward
                 parcel['episode_length'] = len(rewards)
+
+        def get_random_action(parcel: dict):
+            num_envs = parcel['obs'].shape[0]
+            parcel['action'] = np.array([random.randrange(actor.out_features) for _ in range(num_envs)])
+
+        def update_intrinsic_rms(parcel: dict):
+            next_obs = extract_lists_from_generator_of_dicts(
+                generator_of_dicts=warmup_collector.get_entries(),
+                keys=('next_obs',)
+            )
+            warmup_collector.clear_entries()
+
+            next_obs = np.array(next_obs)
+            next_obs = next_obs.reshape(-1, *next_obs.shape[2:])
+
+            orig_next_obs = next_obs[:, -1:, :, :].copy()
+            obs_rms.update(orig_next_obs)
 
         with (tp_utils.StepsTracker(total_timesteps, desc="steps") as steps_tracker,
               tp_tb_utils.Logging(
@@ -621,6 +651,18 @@ def train(optuna_trial, vec_env, actor, critic, fixed_random, rnd, critic_int, t
                     'entropy_coef',
                  ]) as logging):
             yield functools.partial(tp_gym_utils.call_reset, env=vec_env)
+
+            # Warm-up phase to fill the intrinsic reward normalizer
+            for _ in range(3_000):
+                yield functools.partial(get_random_action)
+                yield functools.partial(tp_gym_utils.call_step, env=vec_env, save_obs_as="next_obs")
+                yield warmup_collector
+                yield functools.partial(
+                        tp_gym_utils.call_reset_done, vec_env=vec_env
+                )
+                yield advance
+            yield update_intrinsic_rms
+
             yield steps_tracker # initialization to 0
             yield from itertools.cycle([
                     functools.partial(get_action, agent=actor),
@@ -662,25 +704,25 @@ def create_network(state_space, action_space) -> Tuple[
         StateToValue,
     ]:
     actor = StateToActionLogits(state_space, action_space)
-    actor = torch.jit.script(actor)
+    # actor = torch.jit.script(actor)
     actor = actor.to(device)
 
     critic = StateToValue(state_space)
-    critic = torch.jit.script(critic)
+    # critic = torch.jit.script(critic)
     critic = critic.to(device)
 
     fixed_random = StateToRND()
     for param in fixed_random.parameters():
         param.requires_grad = False
-    fixed_random = torch.jit.script(fixed_random)
+    # fixed_random = torch.jit.script(fixed_random)
     fixed_random = fixed_random.to(device)
 
     rnd = StateToRND_Predictor() # this is refered to as "predictor" in the paper
-    rnd = torch.jit.script(rnd)
+    # rnd = torch.jit.script(rnd)
     rnd = rnd.to(device)
 
     critic_int = StateToValue(state_space, in_channels=1)
-    critic_int = torch.jit.script(critic_int)
+    # critic_int = torch.jit.script(critic_int)
     critic_int = critic_int.to(device)
     return actor, critic, fixed_random, rnd, critic_int
 
@@ -759,8 +801,8 @@ def main():
 
     optuna_study.enqueue_trial({
         'entropy_coef' : 0.001,
-        'coef_int': 0.5,
-        'coef_ext': 1.0,
+        'coef_int': 1.0,
+        'coef_ext': 2.0,
         'total_timesteps': 400_000,
         'record_video': True,
     })
