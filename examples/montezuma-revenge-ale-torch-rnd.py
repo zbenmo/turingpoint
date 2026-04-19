@@ -39,6 +39,13 @@ if device.type == "cuda":
 gym_environment = "ALE/MontezumaRevenge-v5"
 
 
+# copied from clearRL
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+
 class CNNLayers(nn.Module):
     """CNN layers after each there is a non-linearity (ReLU), and also a flattening at the end."""
     def __init__(self, in_channels, activ=nn.ReLU, *args, **kwargs):
@@ -47,7 +54,8 @@ class CNNLayers(nn.Module):
         in_channels = in_channels # for 4 frames (history), 1 for a single frame
         out_size = np.array((84, 84))
         for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
-            cnn_layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride))
+            cnn_layers.append(
+                layer_init(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride)))
             cnn_layers.append(activ())
             in_channels = out_channels
             out_size = (out_size - kernel_size) // stride + 1
@@ -74,9 +82,9 @@ class StateToActionLogits(nn.Module):
         self.cnn_layers = CNNLayers(in_channels=4)
         self.net = nn.Sequential(
             self.cnn_layers,
-            nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
+            layer_init(nn.Linear(3136, 512), std=0.1),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
-            nn.Linear(512, out_features.item()),
+            layer_init(nn.Linear(512, out_features.item()), std=0.1),
         )
         self.out_features = out_features # keep for the range of actions
 
@@ -92,10 +100,9 @@ class StateToValue(nn.Module):
         self.cnn_layers = CNNLayers(in_channels=in_channels)
         self.net = nn.Sequential(
             self.cnn_layers,
-            nn.Linear(3136, 512),  # 3136 hard-coded based on img size + CNN layers
+            layer_init(nn.Linear(3136, 512), std=0.1),  # 3136 hard-coded based on img size + CNN layers
             nn.ReLU(),
-            nn.Linear(512, 1),
-            # nn.Softplus(),
+            layer_init(nn.Linear(512, 1), std=0.1),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -108,17 +115,10 @@ class StateToRND(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.cnn_layer = CNNLayers(in_channels=1, activ=nn.LeakyReLU)
-        latent_dim = 128
-        std = np.sqrt(2)
-        bias_const = 0.0
-        orthogonal = nn.Linear(self.cnn_layer.num_ele, latent_dim)
-        torch.nn.init.orthogonal_(orthogonal.weight, std)
-        torch.nn.init.constant_(orthogonal.bias, bias_const)
+        latent_dim = 512
         self.net = nn.Sequential(
-            # nn.BatchNorm2d(num_features=1),
             self.cnn_layer,
-            orthogonal,
-            # nn.ReLU(),
+            layer_init(nn.Linear(self.cnn_layer.num_ele, latent_dim)),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -127,18 +127,16 @@ class StateToRND(nn.Module):
         return self.net(obs)
 
 
-class StateToRND_Predictor(nn.Module): # Renamed for clarity
+class StateToRND_Predictor(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cnn_layer = CNNLayers(in_channels=1, activ=nn.LeakyReLU) # Same CNN backbone
-        latent_dim = 128
-
-        # Predictor Network (deeper, trained)
+        self.cnn_layer = CNNLayers(in_channels=1, activ=nn.LeakyReLU)
+        latent_dim = 512
         self.net = nn.Sequential(
             self.cnn_layer,
-            nn.Linear(self.cnn_layer.num_ele, 512),
+            layer_init(nn.Linear(self.cnn_layer.num_ele, 512)),
             nn.ReLU(),
-            nn.Linear(512, latent_dim),
+            layer_init(nn.Linear(512, latent_dim)),
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:

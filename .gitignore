@@ -144,3 +144,4 @@ videos/
 optuna_trials.db
 
 Gymnasium/
+*.pth_*
