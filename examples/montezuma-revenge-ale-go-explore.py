@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 import functools
 import math
 from pathlib import Path
@@ -17,6 +18,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import TensorDataset, DataLoader
 import torch.distributions as dist
+import matplotlib.pyplot as plt
 
 import turingpoint.gymnasium_utils as tp_gym_utils
 import turingpoint.utils as tp_utils
@@ -425,6 +427,28 @@ def clone_state(parcel: Dict, env):
     parcel['state'] = env.unwrapped.clone_state()
 
 
+def restore_state(env, state):
+    _ = restore_and_observe(env, state)
+
+
+def restore_and_observe(env, state):
+    env.unwrapped.restore_state(state)
+    # Rebuild wrapper buffers
+    obs, _, _, _, _ = env.step(0)  # NOOP
+    return obs
+
+
+@dataclass
+class VisitedState:
+    times_visited: int = 0
+    times_selected: int = 0
+    total_reward_collected: float = 0
+    state: Any = None
+
+    def __str__(self):
+        return f'times_visited={self.times_visited} total_reward_collected={self.total_reward_collected}'
+
+
 def train(env, total_timesteps: int):
 
     collector = tp_utils.Collector(['state', 'obs', 'action', 'reward', 'new_obs'])
@@ -432,7 +456,7 @@ def train(env, total_timesteps: int):
 
     def downsample_obs(obs: np.ndarray) -> np.ndarray:
         """Hash the observation for archiving. Use the last frame for hashing, downsampled to 11x8 as per Go-Explore paper."""
-        last_frame = obs[-1]  # shape (84, 84), uint8, 0-255
+        last_frame = obs[-1,:,:]  # shape (84, 84), uint8, 0-255
         # Convert to tensor for interpolation
         frame_tensor = torch.tensor(last_frame, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1,1,84,84)
         # Downsample to 11x8 using area interpolation (averaging)
@@ -440,15 +464,6 @@ def train(env, total_timesteps: int):
         downsampled = downsampled.squeeze().numpy()  # (11,8)
         # Rescale to 0-8 integers
         return np.clip(downsampled / 255.0 * 8, 0, 8).astype(np.uint8)
-
-    class VisitedState:
-        times_visited: int = 0
-        times_selected: int = 0
-        total_reward_collected: float = 0
-        state: Any
-
-        def __str__(self):
-            return f'times_visited={self.times_visited} total_reward_collected={self.total_reward_collected}'
 
     seen_obs = defaultdict(VisitedState)
 
@@ -467,11 +482,11 @@ def train(env, total_timesteps: int):
 
     def explore_from_cell(entry):
         # Restore the saved emulator state
-        env.unwrapped.restore_state(entry.state)
+        restore_state(env, entry.state)
 
         # Try each action once
         for action in range(env.action_space.n):
-            env.unwrapped.restore_state(entry.state)  # reset before each action
+            restore_state(env, entry.state)  # reset before each action
             obs, reward, done, truncated, info = env.step(action)
             update_exploration_memory(obs, action, obs, env.unwrapped.clone_state(), reward)
 
@@ -482,7 +497,7 @@ def train(env, total_timesteps: int):
         entry.times_selected += 1
         # print(f'select_state_and_go_there -> {entry}')
         explore_from_cell(entry)
-        env.unwrapped.restore_state(entry.state)
+        restore_and_observe(env, entry.state)
 
     def check_if_time_to_reset(parcel: Dict):
         if not (parcel.get('terminated', False) or parcel.get('truncated', False) or parcel.get('step', 0) % 200 == 0):
@@ -502,9 +517,9 @@ def train(env, total_timesteps: int):
     def advance(parcel: Dict):
         parcel['obs'] = parcel['new_obs']
 
-    def ram_debug(parcel: Dict, env):
-        ram = env.unwrapped.ale.getRAM()
-        print(f'({ram[42]}, {ram[43]})') # x, y of the player
+    # def ram_debug(parcel: Dict, env):
+    #     ram = env.unwrapped.ale.getRAM()
+    #     print(f'({ram[42]}, {ram[43]})') # x, y of the player
 
     def get_participants_exploration():
         with tp_utils.StepsTracker(exploration_steps, desc="exploration steps") as steps_tracker:
@@ -524,6 +539,24 @@ def train(env, total_timesteps: int):
     _ = exploration_assembly.launch()
     print(f'len for seen_obs={len(seen_obs)}')
 
+    plot_sample_states(env, seen_obs)
+
+
+def plot_sample_states(env, seen_obs: Dict[str, VisitedState]):
+    _, axes = plt.subplots(3, 3, figsize=(6, 6))
+    for ax, (key, entry) in zip(
+        axes.flat,
+        itertools.islice(
+            sorted(seen_obs.items(), key=lambda _: random.random()),
+            9)
+        ):
+        restore_state(env, entry.state)
+        obs = env.unwrapped.ale.getScreenRGB()
+        ax.imshow(obs, cmap='gray' if obs.ndim == 2 else None)
+        ax.set_title(key[-4:], {'fontsize':8})
+        ax.axis('off')
+    plt.tight_layout()
+    plt.show()
 
 def main():
     random.seed(1)
