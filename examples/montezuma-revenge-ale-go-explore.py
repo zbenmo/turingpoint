@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 import itertools
 import random
-from typing import Any, Dict, List
+from typing import Any, Dict
 import numpy as np
 import hashlib
 import ale_py
@@ -32,19 +32,6 @@ if device.type == "cuda":
 
 gym_environment = "ALE/MontezumaRevenge-v5"
 
-# # Hyperparameters for cell scoring (Section A.5)
-# EPSILON_1 = 0.001  # Prevents division by 0, determines weight for 0 values
-# EPSILON_2 = 0.00001  # Ensures no cell has 0 probability
-# CELL_SCORE_WEIGHTS = {
-#     'num_times_chosen': 1.0,           # wa for times chosen
-#     'num_times_visited': 0.5,         # wa for times visited
-#     'num_times_chosen_since_improvement': 2.0  # wa for times chosen since improvement
-# }
-# CELL_SCORE_POWERS = {
-#     'num_times_chosen': 1.0,
-#     'num_times_visited': 1.0,
-#     'num_times_chosen_since_improvement': 1.0
-# }
 
 # copied from clearRL
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -138,23 +125,6 @@ def record_video(env, agent, video_path: Path):
     clip = moviepy.ImageSequenceClip([np.uint8(frame) for frame in frames], fps=env.metadata["render_fps"])
     clip.write_videofile(str(video_path), codec="libx264", logger=None)
 
-# def hash_observation(obs: np.ndarray) -> str:
-#     """Hash the observation for archiving. Use the last frame for hashing, downsampled to 11x8 as per Go-Explore paper."""
-#     last_frame = obs[-1]  # shape (84, 84), uint8, 0-255
-#     # Convert to tensor for interpolation
-#     frame_tensor = torch.tensor(last_frame, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1,1,84,84)
-#     # Downsample to 11x8 using area interpolation (averaging)
-#     downsampled = F.interpolate(frame_tensor, size=(11, 8), mode='area')  # (1,1,11,8)
-#     downsampled = downsampled.squeeze().numpy()  # (11,8)
-#     # Rescale to 0-8 integers
-#     downsampled = np.clip(downsampled / 255.0 * 8, 0, 8).astype(np.uint8)
-#     return hashlib.md5(downsampled.tobytes()).hexdigest()
-
-# def call_reset_done_single(parcel, *, env: gym.Env, **kwargs):
-#     if parcel.get('terminated', False) or parcel.get('truncated', False):
-#         ob, inf = env.reset(**kwargs)
-#         parcel['obs'] = ob
-#         parcel['info'] = inf
 
 def get_random_action(parcel: Dict, env):
     """Picks a random action with high repeat probability and restricted action space."""
@@ -175,228 +145,6 @@ def get_action_policy(parcel: Dict, *, agent: StateToActionLogits):
         action_dist = dist.Categorical(logits=logits)
         action = action_dist.sample()
         parcel['action'] = action.cpu().numpy().item() if action.numel() == 1 else action.cpu().numpy()
-
-# def archive_state(parcel: Dict, *, archive: Dict, env: gym.Env):
-#     """Archive the current observation if novel, tracking visit counts."""
-#     obs = parcel['obs']
-#     reward = parcel.get('reward', 0)
-    
-#     if len(obs.shape) == 4:  # vectorized
-#         for o in obs:
-#             h = hash_observation(o)
-#             if h not in archive:
-#                 # Clone the full environment state for proper resetting
-#                 state = env.unwrapped.clone_state()
-#                 archive[h] = {
-#                     'obs': o.copy(),
-#                     'state': state,
-#                     'num_times_chosen': 0,
-#                     'num_times_visited': 0,
-#                     'num_times_chosen_since_improvement': 0,
-#                     'best_reward_seen': 0,
-#                 }
-#             archive[h]['num_times_visited'] += 1
-#             archive[h]['best_reward_seen'] = max(archive[h].get('best_reward_seen', 0), reward if isinstance(reward, (int, float)) else 0)
-#     else:
-#         h = hash_observation(obs)
-#         if h not in archive:
-#             # Clone the full environment state for proper resetting
-#             state = env.unwrapped.clone_state()
-#             archive[h] = {
-#                 'obs': obs.copy(),
-#                 'state': state,
-#                 'num_times_chosen': 0,
-#                 'num_times_visited': 0,
-#                 'num_times_chosen_since_improvement': 0,
-#                 'best_reward_seen': 0,
-#             }
-#         archive[h]['num_times_visited'] += 1
-#         archive[h]['best_reward_seen'] = max(archive[h].get('best_reward_seen', 0), reward if isinstance(reward, (int, float)) else 0)
-
-# def collect_trajectory_for_bc(parcel: Dict, *, trajectories: List, archive: Dict, current_trajectory: List):
-#     """Collect trajectory data for BC."""
-#     obs = parcel['obs']
-#     action = parcel['action']
-    
-#     if len(obs.shape) == 4:
-#         obs = obs[0]
-#         action = action[0]
-    
-#     current_trajectory.append({'obs': obs.copy(), 'action': action})
-#     h = hash_observation(obs)
-#     if h in archive and len(trajectories) < 100:
-#         # If we reached an archived state, save the trajectory
-#         trajectories.append({'steps': current_trajectory.copy()})
-#         current_trajectory.clear()
-
-# def train_bc_policy(trajectories: List, policy: StateToActionLogits, optimizer, num_epochs=10):
-#     """Train policy using Behavioral Cloning on collected trajectories."""
-#     if not trajectories:
-#         return
-    
-#     # Use all trajectories for training
-#     top_trajectories = trajectories
-    
-#     if top_trajectories:
-#         print(f"Training BC on {len(top_trajectories)} trajectories")
-    
-#     # Flatten trajectories into (obs, action) pairs
-#     obs_list = []
-#     action_list = []
-#     for traj_data in top_trajectories:
-#         traj = traj_data.get('steps', traj_data)
-#         for step in traj:
-#             obs_list.append(preprocess_observation(step['obs']))
-#             action_list.append(step['action'])
-
-#     obs_tensor = torch.tensor(np.array(obs_list), dtype=torch.float32).to(device)
-#     action_tensor = torch.tensor(np.array(action_list), dtype=torch.long).to(device)
-
-#     dataset = TensorDataset(obs_tensor, action_tensor)
-#     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
-
-#     policy.train()
-#     for epoch in range(num_epochs):
-#         for obs_batch, action_batch in dataloader:
-#             optimizer.zero_grad()
-#             logits = policy(obs_batch)
-#             loss = F.cross_entropy(logits, action_batch)
-#             loss.backward()
-#             optimizer.step()
-
-# def calculate_cell_score(cell_data: Dict) -> float:
-#     """Calculate score for a cell based on count subscores (Section A.5)."""
-#     score = 0.0
-#     attributes = {
-#         'num_times_chosen': cell_data.get('num_times_chosen', 0),
-#         'num_times_visited': cell_data.get('num_times_visited', 0),
-#         'num_times_chosen_since_improvement': cell_data.get('num_times_chosen_since_improvement', 0),
-#     }
-    
-#     for attr_name, attr_value in attributes.items():
-#         wa = CELL_SCORE_WEIGHTS[attr_name]
-#         pa = CELL_SCORE_POWERS[attr_name]
-#         cnt_score = wa * (1.0 / ((attr_value + EPSILON_1) ** pa)) + EPSILON_2
-#         score += cnt_score
-    
-#     return score
-
-# def select_cell_from_archive(archive: Dict) -> tuple:
-#     """Select a cell from archive using probability distribution based on scores.
-    
-#     Returns: (selected_hash, obs, state, best_reward) or (None, None, None, 0) if archive is empty
-#     """
-#     if not archive:
-#         return None, None, None, 0
-    
-#     # Calculate scores for all cells
-#     cell_hashes = list(archive.keys())
-#     scores = np.array([calculate_cell_score(archive[h]) for h in cell_hashes])
-    
-#     # Normalize to get probabilities
-#     probabilities = scores / scores.sum()
-    
-#     # Select a cell based on probabilities
-#     selected_idx = np.random.choice(len(cell_hashes), p=probabilities)
-#     selected_hash = cell_hashes[selected_idx]
-    
-#     # Update the selected cell's count
-#     archive[selected_hash]['num_times_chosen'] += 1
-    
-#     return selected_hash, archive[selected_hash]['obs'], archive[selected_hash]['state'], archive[selected_hash].get('best_reward_seen', 0)
-
-# def track_archive_improvement(archive: Dict, prev_archive_size: int):
-#     """Track improvement by resetting counts for cells that discovered new cells."""
-#     if len(archive) > prev_archive_size:
-#         # New cells were discovered, reset improvement counter for recently chosen cells
-#         for h in archive:
-#             archive[h]['num_times_chosen_since_improvement'] = 0
-
-# def reset_to_cell(parcel: Dict, env: gym.Env, state, cell_obs: np.ndarray):
-#     """Reset environment to an archived cell by restoring its state."""
-#     if state is not None:
-#         env.unwrapped.restore_state(state)
-#         # Set the observation to the archived one (should match the restored state)
-#         parcel['obs'] = cell_obs.copy()
-#         parcel['_reset_to_cell'] = True
-
-# def go_explore(env, total_timesteps: int):
-#     """Implement Go-Explore algorithm with cell resetting (the full loop)."""
-#     archive = {}  # hash -> {'obs': np.array, 'num_times_chosen': int, 'num_times_visited': int, ...}
-#     trajectories = []  # List of trajectories for BC
-#     current_trajectory = []
-
-#     # Exploration phase: Use random actions to discover states
-#     exploration_steps = 3 * total_timesteps // 4
-#     collector = tp_utils.Collector(['obs', 'action', 'reward'])
-    
-#     def get_train_participants_exploration():
-#         with tp_utils.StepsTracker(exploration_steps, desc="exploration steps") as steps_tracker:
-#             yield functools.partial(tp_gym_utils.call_reset, env=env)
-#             yield from itertools.cycle([
-#                 get_random_action(num_actions=env.action_space.n),
-#                 functools.partial(tp_gym_utils.call_step, env=env),
-#                 collector,
-#                 functools.partial(archive_state, archive=archive, env=env),
-#                 functools.partial(collect_trajectory_for_bc, trajectories=trajectories, archive=archive, current_trajectory=current_trajectory),
-#                 steps_tracker,
-#                 functools.partial(call_reset_done_single, env=env),
-#             ])
-
-#     exploration_assembly = tp.Assembly(get_train_participants_exploration)
-#     exploration_assembly.launch()
-
-#     print(f"Archived {len(archive)} states during exploration.")
-#     max_reward_found = max([archive[h].get('best_reward_seen', 0) for h in archive], default=0)
-#     print(f"Max reward found during exploration: {max_reward_found}")
-
-#     # Robustification phase: Train policy using BC on collected trajectories
-#     policy = StateToActionLogits(env.observation_space.shape[0], env.action_space.n)
-#     policy = policy.to(device)
-#     optimizer = torch.optim.Adam(policy.parameters(), lr=1e-4)
-
-#     train_bc_policy(trajectories, policy, optimizer)
-
-#     print("Trained policy using Behavioral Cloning.")
-
-#     # Exploitation phase: Use cell selection + resetting + policy (the full Go-Explore loop)
-#     # Key difference: periodically select a cell from archive, reset to it, then explore from there
-#     exploitation_steps = total_timesteps - exploration_steps
-#     trajectories.clear()
-#     current_trajectory.clear()
-
-#     cell_reset_counter = 0
-#     cell_reset_frequency = 100  # Reset to a new cell every N steps
-
-#     def cell_selector(parcel: Dict):
-#         """Periodically select and reset to cells from the archive."""
-#         nonlocal cell_reset_counter, env
-#         cell_reset_counter += 1
-#         if cell_reset_counter % cell_reset_frequency == 0 and archive:
-#             selected_hash, cell_obs, cell_state, cell_reward = select_cell_from_archive(archive)
-#             reset_to_cell(parcel, env, cell_state, cell_obs)
-
-#     def get_train_participants_exploitation():
-#         with tp_utils.StepsTracker(exploitation_steps, desc="exploitation steps") as steps_tracker:
-#             yield functools.partial(tp_gym_utils.call_reset, env=env)
-#             yield from itertools.cycle([
-#                 cell_selector,  # Periodically select and reset to cells (the "Go" in Go-Explore)
-#                 functools.partial(get_action_policy, agent=policy),
-#                 functools.partial(tp_gym_utils.call_step, env=env),
-#                 collector,
-#                 functools.partial(archive_state, archive=archive, env=env),
-#                 steps_tracker,
-#                 functools.partial(call_reset_done_single, env=env),
-#             ])
-
-#     exploitation_assembly = tp.Assembly(get_train_participants_exploitation)
-#     exploitation_assembly.launch()
-
-#     print(f"Total archived states: {len(archive)}")
-#     max_reward_found = max([archive[h].get('best_reward_seen', 0) for h in archive], default=0)
-#     print(f"Max reward found: {max_reward_found}")
-
-#     return policy, archive
 
 
 def evaluate(env, agent, num_episodes: int) -> float:
