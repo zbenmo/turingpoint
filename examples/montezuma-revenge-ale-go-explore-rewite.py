@@ -33,8 +33,12 @@ if device.type == "cuda":
 gym_environment = "ALE/MontezumaRevenge-v5"
 
 
+def _clone_state(env):
+    return env.unwrapped.clone_state()
+
+
 def clone_state(parcel: Dict, env, save_state_as: str = 'state'):
-    parcel[save_state_as] = env.unwrapped.clone_state()
+    parcel[save_state_as] = _clone_state(env)
 
 
 def restore_and_observe(env, state):
@@ -76,19 +80,41 @@ def obs_to_key(obs: np.ndarray) -> str:
 
 
 def train(env, exploration_steps: int):
-    
-    archive = dict()
-    # counter = Counter()
+
+    @dataclass
+    class ArchiveItem:
+        state: Any
+        path: list[str]
+        total_reward: float
+
+    archive: dict[str, ArchiveItem] = dict()
+    counter = Counter()
 
     def init_exploration(parcel: Dict):
         state = parcel.pop('state')
-        obs = parcel.get('obs')
+        obs = parcel['obs']
         key = obs_to_key(obs)
-        archive[key] = state
+        archive[key] = ArchiveItem(state=state, path=[], total_reward=0)
+        parcel['parent_key'] = key
+        counter[key] += 1
 
-
-    def consider_new_state(parcel: Dict):
-        pass
+    def consider_new_state(parcel: Dict, env):
+        obs = parcel['obs']
+        key = obs_to_key(obs)
+        counter[key] += 1
+        reward = parcel['reward']
+        if reward > 0:
+            print(f'{reward=}')
+        parent_key = parcel['parent_key']
+        parent_entry = archive[parent_key]
+        total_reward = parent_entry.total_reward + reward
+        if key not in archive:
+            state = _clone_state(env)
+            new_path = parent_entry.path[:]
+            new_path.append(parent_key)
+            archive[key] = ArchiveItem(state=state, path=new_path, total_reward=total_reward)
+        # TODO: decide if to replace, maintain total reward
+        parcel['parent_key'] = key
 
 
     def check_if_time_to_reset(parcel: Dict):
@@ -99,8 +125,9 @@ def train(env, exploration_steps: int):
         ):
             return
 
-        selected_state = next(iter(archive.values())) # TEMP TODO:
-        parcel['obs'] = restore_and_observe(env, selected_state)
+        s = sorted(archive, key=lambda key: counter[key]) # TEMP TODO:
+        selected_key = next(iter(s))
+        parcel['obs'] = restore_and_observe(env, archive[selected_key].state)
         # TODO: restore reward, terminated, truncated
 
 
@@ -116,7 +143,7 @@ def train(env, exploration_steps: int):
                 yield from itertools.cycle([
                     functools.partial(get_random_action, env=env),
                     functools.partial(tp_gym_utils.call_step, env=env, save_obs_as='new_obs'),
-                    consider_new_state,
+                    functools.partial(consider_new_state, env=env),
                     # functools.partial(clone_state, env=env, save_state_as='new_state'),
                     # collector,
                     advance,
@@ -126,6 +153,8 @@ def train(env, exploration_steps: int):
 
         exploration_assembly = tp.Assembly(get_participants_exploration)
         _ = exploration_assembly.launch()
+
+        print(f'archive len={len(archive)}')
 
 
     def robustify():
@@ -161,7 +190,7 @@ def main():
 
     env = make_env(seed=0)
 
-    exploration_steps = 200_000  # Adjust as needed
+    exploration_steps = 1_000_000  # Adjust as needed
 
     train(env, exploration_steps)
 
