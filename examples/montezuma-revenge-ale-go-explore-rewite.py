@@ -88,7 +88,7 @@ def train(env, exploration_steps: int):
         total_reward: float
 
     archive: dict[str, ArchiveItem] = dict()
-    counter = Counter()
+    counts = Counter()
 
     def init_exploration(parcel: Dict):
         state = parcel.pop('state')
@@ -96,19 +96,24 @@ def train(env, exploration_steps: int):
         key = obs_to_key(obs)
         archive[key] = ArchiveItem(state=state, path=[], total_reward=0)
         parcel['parent_key'] = key
-        counter[key] += 1
+        counts[key] += 1
+        # print(counts)
 
     def consider_new_state(parcel: Dict, env):
         obs = parcel['obs']
         key = obs_to_key(obs)
-        counter[key] += 1
+        counts[key] += 1
+        # print(counts)
         reward = parcel['reward']
         if reward > 0:
             print(f'{reward=}')
-        parent_key = parcel['parent_key']
-        parent_entry = archive[parent_key]
-        total_reward = parent_entry.total_reward + reward
-        if key not in archive:
+        parent_key = parcel.pop('parent_key', None)
+        if parent_key:
+            parent_entry = archive[parent_key]
+            total_reward = parent_entry.total_reward + reward
+        else:
+            total_reward = reward
+        if key not in archive or total_reward > archive[key].total_reward:
             state = _clone_state(env)
             new_path = parent_entry.path[:]
             new_path.append(parent_key)
@@ -123,13 +128,19 @@ def train(env, exploration_steps: int):
             or parcel.get('truncated', False)
             or parcel.get('step', 0) % 200 == 0
         ):
+            # print(f'step={parcel.get("step")}')
             return
 
-        s = sorted(archive, key=lambda key: counter[key]) # TEMP TODO:
-        selected_key = next(iter(s))
+        s = sorted(archive, key=lambda key: counts[key]) # TEMP TODO:
+        selected_key = s[0]
+        # print(f"counter={counts[selected_key]}")
+        # print(f"archive[selected_key]={archive[selected_key]}")
         parcel['obs'] = restore_and_observe(env, archive[selected_key].state)
+        parcel.pop('parent_key', None)
+        if len(archive[selected_key].path) > 0:
+            parcel['parent_key'] = archive[selected_key].path[-1]
         # TODO: restore reward, terminated, truncated
-
+        counts[selected_key] += 1
 
     def explore():
 
@@ -141,7 +152,7 @@ def train(env, exploration_steps: int):
                 yield functools.partial(clone_state, env=env) # TODO: move it into init_exploration
                 yield init_exploration
                 yield from itertools.cycle([
-                    functools.partial(get_random_action, env=env),
+                    functools.partial(get_random_action, env=env, repeat_prob=0.4),
                     functools.partial(tp_gym_utils.call_step, env=env, save_obs_as='new_obs'),
                     functools.partial(consider_new_state, env=env),
                     # functools.partial(clone_state, env=env, save_state_as='new_state'),
@@ -155,6 +166,7 @@ def train(env, exploration_steps: int):
         _ = exploration_assembly.launch()
 
         print(f'archive len={len(archive)}')
+        print(f'counts len={len(counts)}')
 
 
     def robustify():
@@ -190,7 +202,7 @@ def main():
 
     env = make_env(seed=0)
 
-    exploration_steps = 1_000_000  # Adjust as needed
+    exploration_steps = 200_000  # Adjust as needed
 
     train(env, exploration_steps)
 
