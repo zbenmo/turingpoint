@@ -111,12 +111,17 @@ def train(env, exploration_steps: int):
         if parent_key:
             parent_entry = archive[parent_key]
             total_reward = parent_entry.total_reward + reward
-        else:
-            total_reward = reward
-        if key not in archive or total_reward > archive[key].total_reward:
-            state = _clone_state(env)
             new_path = parent_entry.path[:]
             new_path.append(parent_key)
+        else:
+            total_reward = reward
+            new_path = []
+        if (
+            key not in archive
+            or total_reward > archive[key].total_reward
+            or total_reward == archive[key].total_reward and len(new_path) < len(archive[key].path)
+        ):
+            state = _clone_state(env)
             archive[key] = ArchiveItem(state=state, path=new_path, total_reward=total_reward)
         # TODO: decide if to replace, maintain total reward
         parcel['parent_key'] = key
