@@ -79,6 +79,67 @@ def obs_to_key(obs: np.ndarray) -> str:
     return hashlib.sha256(downsampled.tobytes()).hexdigest()
 
 
+def plot_best_path(env, best_path: list[Any]):
+    pass
+    # best_key = max(seen_obs.keys(), key=lambda k: (seen_obs[k].cumulative_reward, seen_obs[k].step_count))
+    # best_entry = seen_obs[best_key]
+    # print(f"Best path cumulative reward: {best_entry.cumulative_reward}, step count: {best_entry.step_count}")
+    
+    # # Traceback
+    # path = []
+    # current_key = best_key
+    # while current_key is not None:
+    #     entry = seen_obs[current_key]
+    #     if entry.parent_key in set(x[0] for x in path):
+    #         break
+    #     path.append((current_key, entry))
+    #     current_key = entry.parent_key
+    # path.reverse()
+    
+    print(f"Path length (actual saved cells): {len(best_path)}")
+    
+    # Select up to 16 states to plot
+    num_to_plot = min(16, len(best_path))
+    if num_to_plot == 0:
+        return
+        
+    # Pick indices evenly spaced
+    indices = np.linspace(0, len(best_path) - 1, num_to_plot, dtype=int)
+    
+    # Determine grid size
+    grid_size = int(math.ceil(math.sqrt(num_to_plot)))
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(8, 8))
+    
+    # Flatten axes for easy iteration
+    if grid_size == 1:
+        axes = np.array([axes])
+    axes_flat = axes.flat
+    
+    for i, idx in enumerate(indices):
+        ax = axes_flat[i]
+        state = best_path[idx]
+        
+        # Restore state and render screen
+        _ = restore_and_observe(env,state)
+        obs = env.unwrapped.ale.getScreenRGB()
+        
+        ax.imshow(obs)
+        # ax.set_title(f"Step: {entry.step_count}\nRew: {entry.cumulative_reward}", fontsize=8)
+        ax.axis('off')
+        
+    # Hide unused axes
+    for j in range(i + 1, len(axes_flat)):
+        axes_flat[j].axis('off')
+        
+    plt.tight_layout()
+    plt.savefig("best_path.png")
+    print("Saved best path visualization to best_path.png")
+    try:
+        plt.show()
+    except Exception as e:
+        print(f"Could not run plt.show(): {e}")
+
+
 def train(env, exploration_steps: int):
 
     @dataclass
@@ -147,6 +208,8 @@ def train(env, exploration_steps: int):
         # TODO: restore reward, terminated, truncated
         counts[selected_key] += 1
 
+        # TODO: instead of path, save only the parent. It is better for example if the parent or someone else on the way improves.
+
     def explore():
 
         # collector = tp_utils.Collector(['state', 'obs', 'action', 'reward', 'new_obs'])
@@ -172,6 +235,11 @@ def train(env, exploration_steps: int):
 
         print(f'archive len={len(archive)}')
         print(f'counts len={len(counts)}')
+
+        s = sorted(archive, key=lambda key: archive[key].total_reward)
+        best = archive[s[-1]]
+
+        plot_best_path(env, [archive[x].state for x in best.path] + [best.state])
 
 
     def robustify():
