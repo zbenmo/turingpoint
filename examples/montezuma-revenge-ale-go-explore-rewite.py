@@ -128,7 +128,7 @@ def plot_best_path(env, best_path: list[Any]):
         obs = env.unwrapped.ale.getScreenRGB()
         
         ax.imshow(obs)
-        # ax.set_title(f"Step: {entry.step_count}\nRew: {entry.cumulative_reward}", fontsize=8)
+        ax.set_title(f"pos {idx}", fontsize=8)
         ax.axis('off')
         
     # Hide unused axes
@@ -152,6 +152,7 @@ def train(env, exploration_steps: int):
         parent: ArchiveItem | None = None
         action: Action | None = None # from parent here
         total_reward: float = 0
+        trajectory_len: int = 0
 
     archive: dict[str, ArchiveItem] = dict()
     counts = Counter()
@@ -176,26 +177,30 @@ def train(env, exploration_steps: int):
         parent_entry = parcel.pop('parent_entry', None)
         if parent_entry:
             total_reward = parent_entry.total_reward + reward
+            trajectory_len = parent_entry.trajectory_len + 1
         else:
             total_reward = reward
+            trajectory_len = 0
+
+        newItem = ArchiveItem(
+            state=_clone_state(env),
+            parent=parent_entry,
+            action=action,
+            total_reward=total_reward,
+            trajectory_len=trajectory_len
+        )
 
         if (
             key not in archive
             or total_reward > archive[key].total_reward
             # or (
             #     total_reward == archive[key].total_reward
-            #     and len(trajectory) < len(archive[key].trajectory)
+            #     and trajectory_len < archive[key].trajectory_len
             # )
         ):
-            state = _clone_state(env)
-            archive[key] = ArchiveItem(
-                state=state,
-                parent=parent_entry,
-                action=action,
-                total_reward=total_reward
-            )
+            archive[key] = newItem
 
-        parcel['parent_entry'] = archive[key]
+        parcel['parent_entry'] = newItem
 
 
     def check_if_time_to_reset(parcel: Dict):
