@@ -1,3 +1,4 @@
+from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 import functools
@@ -5,7 +6,7 @@ import math
 from pathlib import Path
 import itertools
 import random
-from typing import Any, Dict
+from typing import Any, Dict, TypeAlias
 import numpy as np
 import hashlib
 import ale_py
@@ -32,6 +33,9 @@ if device.type == "cuda":
 
 gym_environment = "ALE/MontezumaRevenge-v5"
 
+Observation: TypeAlias = np.ndarray
+Action: TypeAlias = int
+State: TypeAlias = Any
 
 def _clone_state(env):
     return env.unwrapped.clone_state()
@@ -62,7 +66,7 @@ def advance(parcel: Dict):
     parcel['obs'] = parcel.pop('new_obs')
 
 
-def downsample_obs(obs: np.ndarray) -> np.ndarray:
+def downsample_obs(obs: Observation) -> np.ndarray:
     """Hash the observation for archiving. Use the last frame for hashing, downsampled to 11x8 as per Go-Explore paper."""
     last_frame = obs[-1]  # shape (84, 84), uint8, 0-255
     # Convert to tensor for interpolation
@@ -74,7 +78,7 @@ def downsample_obs(obs: np.ndarray) -> np.ndarray:
     return np.clip(downsampled / 255.0 * 8, 0, 8).astype(np.uint8)
 
 
-def obs_to_key(obs: np.ndarray) -> str:
+def obs_to_key(obs: Observation) -> str:
     downsampled = downsample_obs(obs)
     return hashlib.sha256(downsampled.tobytes()).hexdigest()
 
@@ -142,11 +146,12 @@ def plot_best_path(env, best_path: list[Any]):
 
 def train(env, exploration_steps: int):
 
-    @dataclass
+    @dataclass(frozen=True)
     class ArchiveItem:
-        state: Any
-        path: list[str]
-        total_reward: float
+        state: State
+        parent: ArchiveItem | None = None
+        action: Action | None = None # from parent here
+        total_reward: float = 0
 
     archive: dict[str, ArchiveItem] = dict()
     counts = Counter()
@@ -155,37 +160,42 @@ def train(env, exploration_steps: int):
         state = parcel.pop('state')
         obs = parcel['obs']
         key = obs_to_key(obs)
-        archive[key] = ArchiveItem(state=state, path=[], total_reward=0)
-        parcel['parent_key'] = key
+        archive[key] = ArchiveItem(state=state)
+        parcel['parent_entry'] = archive[key]
         counts[key] += 1
-        # print(counts)
 
     def consider_new_state(parcel: Dict, env):
         obs = parcel['obs']
+        action = parcel['action']
         key = obs_to_key(obs)
         counts[key] += 1
-        # print(counts)
         reward = parcel['reward']
         if reward > 0:
             print(f'{reward=}')
-        parent_key = parcel.pop('parent_key', None)
-        if parent_key:
-            parent_entry = archive[parent_key]
+
+        parent_entry = parcel.pop('parent_entry', None)
+        if parent_entry:
             total_reward = parent_entry.total_reward + reward
-            new_path = parent_entry.path[:]
-            new_path.append(parent_key)
         else:
             total_reward = reward
-            new_path = []
+
         if (
             key not in archive
             or total_reward > archive[key].total_reward
-            or total_reward == archive[key].total_reward and len(new_path) < len(archive[key].path)
+            # or (
+            #     total_reward == archive[key].total_reward
+            #     and len(trajectory) < len(archive[key].trajectory)
+            # )
         ):
             state = _clone_state(env)
-            archive[key] = ArchiveItem(state=state, path=new_path, total_reward=total_reward)
-        # TODO: decide if to replace, maintain total reward
-        parcel['parent_key'] = key
+            archive[key] = ArchiveItem(
+                state=state,
+                parent=parent_entry,
+                action=action,
+                total_reward=total_reward
+            )
+
+        parcel['parent_entry'] = archive[key]
 
 
     def check_if_time_to_reset(parcel: Dict):
@@ -194,25 +204,19 @@ def train(env, exploration_steps: int):
             or parcel.get('truncated', False)
             or parcel.get('step', 0) % 200 == 0
         ):
-            # print(f'step={parcel.get("step")}')
             return
 
         s = sorted(archive, key=lambda key: counts[key]) # TEMP TODO:
         selected_key = s[0]
-        # print(f"counter={counts[selected_key]}")
-        # print(f"archive[selected_key]={archive[selected_key]}")
         parcel['obs'] = restore_and_observe(env, archive[selected_key].state)
-        parcel.pop('parent_key', None)
-        if len(archive[selected_key].path) > 0:
-            parcel['parent_key'] = archive[selected_key].path[-1]
+        parcel.pop('parent_entry', None)
+        if archive[selected_key].parent is not None:
+            parcel['parent_entry'] = archive[selected_key].parent
         # TODO: restore reward, terminated, truncated
         counts[selected_key] += 1
 
-        # TODO: instead of path, save only the parent. It is better for example if the parent or someone else on the way improves.
 
     def explore():
-
-        # collector = tp_utils.Collector(['state', 'obs', 'action', 'reward', 'new_obs'])
 
         def get_participants_exploration():
             with tp_utils.StepsTracker(exploration_steps, desc="exploration steps") as steps_tracker:
@@ -223,8 +227,6 @@ def train(env, exploration_steps: int):
                     functools.partial(get_random_action, env=env, repeat_prob=0.4),
                     functools.partial(tp_gym_utils.call_step, env=env, save_obs_as='new_obs'),
                     functools.partial(consider_new_state, env=env),
-                    # functools.partial(clone_state, env=env, save_state_as='new_state'),
-                    # collector,
                     advance,
                     steps_tracker,
                     check_if_time_to_reset
@@ -239,7 +241,14 @@ def train(env, exploration_steps: int):
         s = sorted(archive, key=lambda key: archive[key].total_reward)
         best = archive[s[-1]]
 
-        plot_best_path(env, [archive[x].state for x in best.path] + [best.state])
+        trajectory = [best]
+        p = best.parent
+        while p is not None:
+            trajectory.append(p)
+            p = p.parent
+        trajectory.reverse()
+
+        plot_best_path(env, [x.state for x in trajectory])
 
 
     def robustify():
