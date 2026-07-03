@@ -41,8 +41,8 @@ def _clone_state(env):
     return env.unwrapped.clone_state()
 
 
-def clone_state(parcel: Dict, env, save_state_as: str = 'state'):
-    parcel[save_state_as] = _clone_state(env)
+# def clone_state(parcel: Dict, env, save_state_as: str = 'state'):
+#     parcel[save_state_as] = _clone_state(env)
 
 
 def restore_and_observe(env, state):
@@ -84,22 +84,6 @@ def obs_to_key(obs: Observation) -> str:
 
 
 def plot_best_path(env, best_path: list[Any]):
-    pass
-    # best_key = max(seen_obs.keys(), key=lambda k: (seen_obs[k].cumulative_reward, seen_obs[k].step_count))
-    # best_entry = seen_obs[best_key]
-    # print(f"Best path cumulative reward: {best_entry.cumulative_reward}, step count: {best_entry.step_count}")
-    
-    # # Traceback
-    # path = []
-    # current_key = best_key
-    # while current_key is not None:
-    #     entry = seen_obs[current_key]
-    #     if entry.parent_key in set(x[0] for x in path):
-    #         break
-    #     path.append((current_key, entry))
-    #     current_key = entry.parent_key
-    # path.reverse()
-    
     print(f"Path length (actual saved cells): {len(best_path)}")
     
     # Select up to 16 states to plot
@@ -144,6 +128,22 @@ def plot_best_path(env, best_path: list[Any]):
         print(f"Could not run plt.show(): {e}")
 
 
+def save_trajectory_video(env, trajectory: list[Any], output_path: str = "best_path.mp4"):
+    if not trajectory:
+        return
+
+    from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+
+    frames = []
+    for state in trajectory:
+        _ = restore_and_observe(env, state)
+        frames.append(env.unwrapped.ale.getScreenRGB())
+
+    clip = ImageSequenceClip(frames, fps=10)
+    clip.write_videofile(output_path, codec="libx264", audio=False)
+    print(f"Saved trajectory video to {output_path}")
+
+
 def train(env, exploration_steps: int):
 
     @dataclass(frozen=True)
@@ -158,7 +158,7 @@ def train(env, exploration_steps: int):
     counts = Counter()
 
     def init_exploration(parcel: Dict):
-        state = parcel.pop('state')
+        state = _clone_state(env)
         obs = parcel['obs']
         key = obs_to_key(obs)
         archive[key] = ArchiveItem(state=state)
@@ -175,12 +175,9 @@ def train(env, exploration_steps: int):
             print(f'{reward=}')
 
         parent_entry = parcel.pop('parent_entry', None)
-        if parent_entry:
-            total_reward = parent_entry.total_reward + reward
-            trajectory_len = parent_entry.trajectory_len + 1
-        else:
-            total_reward = reward
-            trajectory_len = 0
+        assert parent_entry is not None
+        total_reward = parent_entry.total_reward + reward
+        trajectory_len = parent_entry.trajectory_len + 1
 
         newItem = ArchiveItem(
             state=_clone_state(env),
@@ -203,6 +200,16 @@ def train(env, exploration_steps: int):
         parcel['parent_entry'] = newItem
 
 
+    def select_an_entry_to_explore_further(parcel: Dict):
+        s = sorted(archive, key=lambda key: counts[key]) # TEMP TODO:
+        selected_key = s[0]
+        selected_entry = archive[selected_key]
+        parcel['obs'] = restore_and_observe(env, selected_entry.state)
+        parcel['parent_entry'] = selected_entry
+        # TODO: restore reward, terminated, truncated
+        counts[selected_key] += 1
+
+
     def check_if_time_to_reset(parcel: Dict):
         if not (
             parcel.get('terminated', False)
@@ -211,14 +218,7 @@ def train(env, exploration_steps: int):
         ):
             return
 
-        s = sorted(archive, key=lambda key: counts[key]) # TEMP TODO:
-        selected_key = s[0]
-        parcel['obs'] = restore_and_observe(env, archive[selected_key].state)
-        parcel.pop('parent_entry', None)
-        if archive[selected_key].parent is not None:
-            parcel['parent_entry'] = archive[selected_key].parent
-        # TODO: restore reward, terminated, truncated
-        counts[selected_key] += 1
+        select_an_entry_to_explore_further(parcel)
 
 
     def explore():
@@ -226,7 +226,7 @@ def train(env, exploration_steps: int):
         def get_participants_exploration():
             with tp_utils.StepsTracker(exploration_steps, desc="exploration steps") as steps_tracker:
                 yield functools.partial(tp_gym_utils.call_reset, env=env)
-                yield functools.partial(clone_state, env=env) # TODO: move it into init_exploration
+                # yield functools.partial(clone_state, env=env) # TODO: move it into init_exploration
                 yield init_exploration
                 yield from itertools.cycle([
                     functools.partial(get_random_action, env=env, repeat_prob=0.4),
@@ -253,7 +253,9 @@ def train(env, exploration_steps: int):
             p = p.parent
         trajectory.reverse()
 
-        plot_best_path(env, [x.state for x in trajectory])
+        trajectory_states = [x.state for x in trajectory]
+        plot_best_path(env, trajectory_states)
+        save_trajectory_video(env, trajectory_states)
 
 
     def robustify():
