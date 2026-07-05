@@ -1,9 +1,10 @@
 from __future__ import annotations
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 import functools
 import math
-from pathlib import Path
+import pickle
+# from pathlib import Path
 import itertools
 import random
 from typing import Any, Dict, TypeAlias
@@ -13,7 +14,6 @@ import ale_py
 import gymnasium as gym
 from gymnasium.wrappers import FrameStackObservation
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
-import moviepy
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -36,6 +36,61 @@ gym_environment = "ALE/MontezumaRevenge-v5"
 Observation: TypeAlias = np.ndarray
 Action: TypeAlias = int
 State: TypeAlias = Any
+
+
+# copied from clearRL
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+
+class CNNLayers(nn.Module):
+    """CNN layers after each there is a non-linearity (ReLU), and also a flattening at the end."""
+    def __init__(self, in_channels, activ=nn.ReLU, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        cnn_layers = []
+        in_channels = in_channels  # for 4 frames (history), 1 for a single frame
+        out_size = np.array((84, 84))
+        for kernel_size, stride, out_channels in zip([8, 4, 3], [4, 2, 1], [32, 64, 64]):
+            cnn_layers.append(
+                layer_init(nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride)))
+            cnn_layers.append(activ())
+            in_channels = out_channels
+            out_size = (out_size - kernel_size) // stride + 1
+        self.num_ele = (out_channels * out_size.prod()).item()
+        assert self.num_ele == 3136, f'{out_channels=}, {out_size=}'
+        self.net = nn.Sequential(
+            *cnn_layers,
+            nn.Flatten(),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs -> value (a regression)"""
+
+        return self.net(obs)
+
+    @property
+    def num_elements(self) -> int:
+        return self.num_ele
+
+
+class StateToActionLogits(nn.Module):
+    def __init__(self, in_features, out_features, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cnn_layers = CNNLayers(in_channels=4)
+        self.net = nn.Sequential(
+            self.cnn_layers,
+            layer_init(nn.Linear(3136, 512), std=0.1),  # 3136 hard-coded based on img size + CNN layers
+            nn.ReLU(),
+            layer_init(nn.Linear(512, out_features.item()), std=0.1),
+        )
+        self.out_features = out_features  # keep for the range of actions
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs -> actions (logits)"""
+
+        return self.net(obs)
 
 
 def _clone_state(env):
@@ -250,7 +305,6 @@ def train(env, exploration_steps: int):
         def get_participants_exploration():
             with tp_utils.StepsTracker(exploration_steps, desc="exploration steps") as steps_tracker:
                 yield functools.partial(tp_gym_utils.call_reset, env=env)
-                # yield functools.partial(clone_state, env=env) # TODO: move it into init_exploration
                 yield init_exploration
                 yield from itertools.cycle([
                     functools.partial(get_random_action, env=env, repeat_prob=0.4),
@@ -263,6 +317,50 @@ def train(env, exploration_steps: int):
 
         exploration_assembly = tp.Assembly(get_participants_exploration)
         _ = exploration_assembly.launch()
+
+    def robustify(trajectory: list[tuple[Observation, Action]]) -> StateToActionLogits:
+        obs, action = zip(*trajectory)
+
+        obs = obs[:-1]
+        action = action[1:]
+
+        state_space = env.observation_space.shape[0]
+        action_space = env.action_space.n
+
+        agent = StateToActionLogits(state_space, action_space)
+
+        obs_tensor = torch.tensor(np.array(obs), dtype=torch.float32)
+        actions_tensor = torch.tensor(action, dtype=torch.long)
+
+        ds = TensorDataset(obs_tensor, actions_tensor)
+        dl = DataLoader(ds, batch_size=256, shuffle=True)
+
+        optimizer = torch.optim.Adam(agent.parameters(), lr=1e-5)
+
+        for epoch in range(1, 500 + 1):
+            losses = []
+            for o, act in dl:
+
+                logits = agent(o)
+
+                optimizer.zero_grad()
+
+                loss = F.cross_entropy(logits, act)
+
+                losses.append(loss.item())
+                loss.backward()
+
+                optimizer.step()
+
+            if epoch % 10 == 0:
+                print(f'epoch={epoch}, mean loss={np.mean(losses)}')
+
+        return agent
+
+
+    if False:
+
+        explore()
 
         print(f'archive len={len(archive)}')
         print(f'counts len={len(counts)}')
@@ -277,20 +375,51 @@ def train(env, exploration_steps: int):
             p = p.parent
         trajectory.reverse()
 
-        trajectory_states = [x.state for x in trajectory]
-        plot_best_path(env, trajectory_states)
-        save_trajectory_video(env, trajectory_states)
+        if False:
+            trajectory_states = [x.state for x in trajectory]
+            plot_best_path(env, trajectory_states)
+            save_trajectory_video(env, trajectory_states)
 
         print(f'{key_not_in_archive_count=}')
         print(f'{bigger_reward_count=}')
         print(f'{shorter_trajectory_count=}')
 
+        archive.clear()
+        counts.clear()
+        gc.collect()
 
-    def robustify():
-        pass
+        # save trajectory to trajectory.save
+        trajectory_for_save = [
+            (
+                restore_and_observe(env, archiveItem.state),
+                archiveItem.action
+            )
+            for archiveItem in trajectory
+        ]
+        pickle.dump(trajectory_for_save, open("trajectory.save", "wb"))
 
-    explore()
-    robustify()
+    if True:
+
+        # load trajectory from trajectory.save
+        trajectory = pickle.load(open("trajectory.save", "rb"))
+
+        agent = robustify(trajectory)
+
+        trajectory_states = []
+        obs, _ = env.reset(seed=0)
+        for _ in range(1000):
+            with torch.no_grad():
+                logits = agent(torch.tensor(np.array(obs), dtype=torch.float32).unsqueeze(0))
+                action = int(torch.argmax(logits, dim=1).item())
+            next_obs, _, terminated, truncated, _ = env.step(action)
+            trajectory_states.append(_clone_state(env))
+            obs = next_obs
+            if terminated or truncated:
+                break
+
+        plot_best_path(env, trajectory_states)
+        save_trajectory_video(env, trajectory_states)
+
 
 
 def make_env(seed, **kwargs) -> gym.Env:
