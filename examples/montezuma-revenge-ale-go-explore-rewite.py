@@ -37,12 +37,9 @@ Observation: TypeAlias = np.ndarray
 Action: TypeAlias = int
 State: TypeAlias = Any
 
+
 def _clone_state(env):
     return env.unwrapped.clone_state()
-
-
-# def clone_state(parcel: Dict, env, save_state_as: str = 'state'):
-#     parcel[save_state_as] = _clone_state(env)
 
 
 def restore_and_observe(env, state):
@@ -139,12 +136,16 @@ def save_trajectory_video(env, trajectory: list[Any], output_path: str = "best_p
         _ = restore_and_observe(env, state)
         frames.append(env.unwrapped.ale.getScreenRGB())
 
-    clip = ImageSequenceClip(frames, fps=10)
+    clip = ImageSequenceClip(frames, fps=20)
     clip.write_videofile(output_path, codec="libx264", audio=False)
     print(f"Saved trajectory video to {output_path}")
 
 
 def train(env, exploration_steps: int):
+
+    key_not_in_archive_count: int = 0
+    bigger_reward_count: int = 0
+    shorter_trajectory_count: int = 0
 
     @dataclass(frozen=True)
     class ArchiveItem:
@@ -166,6 +167,10 @@ def train(env, exploration_steps: int):
         counts[key] += 1
 
     def consider_new_state(parcel: Dict, env):
+        nonlocal key_not_in_archive_count
+        nonlocal bigger_reward_count
+        nonlocal shorter_trajectory_count
+
         obs = parcel['obs']
         action = parcel['action']
         key = obs_to_key(obs)
@@ -187,22 +192,41 @@ def train(env, exploration_steps: int):
             trajectory_len=trajectory_len
         )
 
+        key_not_in_archive = key not in archive
+        bigger_reward = (key in archive) and total_reward > archive[key].total_reward
+        # shorter_trajectory = (key in archive) and ( # and (parcel.get('step', 0) >  100_000) 
+        #     total_reward == archive[key].total_reward
+        #     and trajectory_len < archive[key].trajectory_len
+        # )
+        shorter_trajectory = False
+
+        if key_not_in_archive:
+            key_not_in_archive_count += 1
+        elif bigger_reward:
+            bigger_reward_count += 1
+        elif shorter_trajectory:
+            shorter_trajectory_count += 1
+            # print(f"shorter_trajectory: {total_reward=}, {trajectory_len=}, { archive[key].trajectory_len=}")
+
         if (
-            key not in archive
-            or total_reward > archive[key].total_reward
-            # or (
-            #     total_reward == archive[key].total_reward
-            #     and trajectory_len < archive[key].trajectory_len
-            # )
+            key_not_in_archive
+            or bigger_reward
+            or shorter_trajectory
         ):
             archive[key] = newItem
 
         parcel['parent_entry'] = newItem
 
 
+    def score(key: str, parcel: Dict) -> float: # my interpretation
+        exploitation = archive[key].total_reward / 200
+        step: float = parcel.get('step', 0) + 1
+        exploration = math.sqrt(2 * math.log2(step) / counts[key])
+        return exploitation + exploration
+
+
     def select_an_entry_to_explore_further(parcel: Dict):
-        s = sorted(archive, key=lambda key: counts[key]) # TEMP TODO:
-        selected_key = s[0]
+        selected_key = max(archive, key=functools.partial(score, parcel=parcel))
         selected_entry = archive[selected_key]
         parcel['obs'] = restore_and_observe(env, selected_entry.state)
         parcel['parent_entry'] = selected_entry
@@ -257,6 +281,10 @@ def train(env, exploration_steps: int):
         plot_best_path(env, trajectory_states)
         save_trajectory_video(env, trajectory_states)
 
+        print(f'{key_not_in_archive_count=}')
+        print(f'{bigger_reward_count=}')
+        print(f'{shorter_trajectory_count=}')
+
 
     def robustify():
         pass
@@ -291,7 +319,7 @@ def main():
 
     env = make_env(seed=0)
 
-    exploration_steps = 200_000  # Adjust as needed
+    exploration_steps = 500_000  # Adjust as needed
 
     train(env, exploration_steps)
 
