@@ -335,9 +335,9 @@ def train(env, exploration_steps: int):
         ds = TensorDataset(obs_tensor, actions_tensor)
         dl = DataLoader(ds, batch_size=256, shuffle=True)
 
-        optimizer = torch.optim.Adam(agent.parameters(), lr=1e-5)
+        optimizer = torch.optim.Adam(agent.parameters(), lr=3e-4)
 
-        for epoch in range(1, 500 + 1):
+        for epoch in range(1, 400 + 1):
             losses = []
             for o, act in dl:
 
@@ -405,9 +405,9 @@ def train(env, exploration_steps: int):
 
         agent = robustify(trajectory)
 
-        trajectory_states = []
         obs, _ = env.reset(seed=0)
-        for _ in range(1000):
+        trajectory_states = [_clone_state(env)]
+        for _ in range(1_000):
             with torch.no_grad():
                 logits = agent(torch.tensor(np.array(obs), dtype=torch.float32).unsqueeze(0))
                 action = int(torch.argmax(logits, dim=1).item())
