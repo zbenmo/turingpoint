@@ -21,6 +21,8 @@ from torch.utils.data import TensorDataset, DataLoader
 import torch.distributions as dist
 import matplotlib.pyplot as plt
 import gc
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 
 import turingpoint.gymnasium_utils as tp_gym_utils
 import turingpoint.utils as tp_utils
@@ -104,6 +106,24 @@ def restore_and_observe(env, state):
     return obs
 
 
+class ResumeFromStateEnv(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self._restore_state: State | None = None
+        self._pending_restore = False
+
+    def set_restore_state(self, state: State):
+        self._restore_state = state
+        self._pending_restore = True
+
+    def reset(self, *, seed=None, options=None):
+        if self._pending_restore and self._restore_state is not None:
+            obs = restore_and_observe(self.env, self._restore_state)
+            self._pending_restore = False
+            return obs, {}
+        return super().reset(seed=seed, options=options)
+
+
 def get_random_action(parcel: Dict, env, repeat_prob: float | None = None):
     if (
         parcel.get('action') is not None
@@ -180,6 +200,71 @@ def plot_best_path(env, best_path: list[Any]):
         print(f"Could not run plt.show(): {e}")
 
 
+def action_to_symbol(action: Action) -> str:
+    mapping = {
+        0: "NOPE",
+        1: "FIRE",
+        2: "↑",
+        3: "→",
+        4: "←",
+        5: "↓",
+        6: "↗",
+        7: "↖",
+        8: "↘",
+        9: "↙",
+        10: "↑FIRE",
+        11: "→FIRE",
+        12: "←FIRE",
+        13: "↓FIRE",
+        14: "↗FIRE",
+        15: "↖FIRE",
+        16: "↘FIRE",
+        17: "↙FIRE",
+    }
+    return mapping.get(action, str(action))
+
+
+def plot_trajectory_segment(
+    env,
+    states: list[State],
+    actions: list[Action],
+    rewards: list[float],
+    start: int,
+    end: int,
+    filename: str | None = None,
+):
+    num_frames = end - start + 1
+    if num_frames <= 0:
+        return
+
+    grid_size = int(math.ceil(math.sqrt(num_frames)))
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(grid_size * 3, grid_size * 3))
+    if grid_size == 1:
+        axes = np.array([axes])
+    axes_flat = axes.flat
+
+    for plot_idx, idx in enumerate(range(start, end + 1)):
+        ax = axes_flat[plot_idx]
+        _ = restore_and_observe(env, states[idx])
+        frame = env.unwrapped.ale.getScreenRGB()
+
+        ax.imshow(frame)
+        ax.set_title(f"{idx}: {action_to_symbol(actions[idx])}, r={rewards[idx]}", fontsize=8)
+        ax.axis("off")
+
+    for extra_ax in axes_flat[num_frames:]:
+        extra_ax.axis("off")
+
+    plt.tight_layout()
+    if filename is not None:
+        plt.savefig(filename)
+        print(f"Saved trajectory segment visualization to {filename}")
+    try:
+        plt.show()
+    except Exception as e:
+        print(f"Could not run plt.show(): {e}")
+
+
 def save_trajectory_video(env, trajectory: list[Any], output_path: str = "best_path.mp4"):
     if not trajectory:
         return
@@ -207,6 +292,8 @@ def train(env, exploration_steps: int):
         state: State
         parent: ArchiveItem | None = None
         action: Action | None = None # from parent here
+        reward: float = 0 # by reaching here
+        terminated: bool = False # AKA done
         total_reward: float = 0
         trajectory_len: int = 0
 
@@ -233,6 +320,7 @@ def train(env, exploration_steps: int):
         reward = parcel['reward']
         if reward > 0:
             print(f'{reward=}')
+        terminated = parcel['terminated']
 
         parent_entry = parcel.pop('parent_entry', None)
         assert parent_entry is not None
@@ -243,6 +331,8 @@ def train(env, exploration_steps: int):
             state=_clone_state(env),
             parent=parent_entry,
             action=action,
+            reward=reward,
+            terminated=terminated,
             total_reward=total_reward,
             trajectory_len=trajectory_len
         )
@@ -358,6 +448,153 @@ def train(env, exploration_steps: int):
         return agent
 
 
+    def robustify_PPO(trajectory: list[tuple[Observation, Action]]) -> PPO:
+        obs, action = zip(*trajectory)
+
+        obs = obs[:-1]
+        action = action[1:]
+
+        obs_tensor = torch.tensor(np.array(obs), dtype=torch.float32)
+        actions_tensor = torch.tensor(action, dtype=torch.long)
+
+        ds = TensorDataset(obs_tensor, actions_tensor)
+        dl = DataLoader(ds, batch_size=256, shuffle=True)
+
+        model = PPO("CnnPolicy", env, verbose=1)
+        policy = model.policy
+
+        optimizer = torch.optim.Adam(policy.parameters(), lr=3e-4)
+        # loss_fn = nn.CrossEntropyLoss()
+
+        for epoch in range(200):
+            losses = []
+            for batch_obs, batch_actions in dl:
+
+                # 1. Extract features from the CNN
+                latent_pi = policy.extract_features(batch_obs)
+
+                # 2. Build the action distribution
+                dist = policy._get_action_dist_from_latent(latent_pi)
+
+                # 3. Get raw logits
+                logits = dist.distribution.logits
+
+                # 4. Cross entropy loss
+                loss = F.cross_entropy(logits, batch_actions)
+
+                losses.append(loss.item())
+
+                # logits = policy(batch_obs)[0]  # policy returns (logits, value)
+                # loss = loss_fn(logits, batch_actions)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            print(f"{epoch} -> loss = {np.mean(losses)}")
+
+        return model
+
+    class RewardTracker(BaseCallback):
+        def __init__(self):
+            super().__init__()
+            self.episode_rewards = []
+            self.current_reward = 0
+
+        def _on_step(self) -> bool:
+            # SB3 stores episode end in info["episode"]
+            info = self.locals["infos"][0]
+            reward = self.locals["rewards"][0]
+
+            self.current_reward += reward
+
+            if "episode" in info:
+                # Episode finished
+                self.episode_rewards.append(self.current_reward)
+                self.current_reward = 0
+
+            return True
+
+    def robustify_by_retreat(trajectory: list[tuple[Observation, Action]]) -> PPO:
+        state, action, reward, terminated = zip(*trajectory)
+
+        obs = [restore_and_observe(env, s) for s in state]
+
+        # model = robustify_PPO(list(zip(obs, action)))
+
+        obs, next_obs = obs[:-1], obs[1:]
+        action = action[1:]
+        reward = reward[1:]
+        terminated = terminated[1:]
+        state = state[:-1]
+
+        assert len(next_obs) == len(obs)
+        assert len(action) == len(obs)
+        assert len(reward) == len(obs)
+        assert len(terminated) == len(obs)
+        assert len(state) == len(obs)
+
+        with_reward = [i for i in range(len(reward)) if reward[i] > 0]
+
+        resume_env = ResumeFromStateEnv(env)
+        model = PPO("CnnPolicy", resume_env, verbose=1)
+
+        # print(','.join(map(str, with_reward)))
+
+        # exit(0)
+
+        go_back = 2
+
+        for ind in reversed(with_reward):
+            start = max(0, ind - go_back)
+
+            # show the states from here to the ind (included), with the reward(s) and the actions
+            plot_trajectory_segment(env, state, action, reward, start, ind, filename=f"retreat_segment_{start}_{ind}.png")
+
+            print(f'{start=}, {ind=}')
+            while True:
+                print('.')
+                resume_env.set_restore_state(state[start])
+                tracker = RewardTracker()
+                model.learn(100, callback=tracker)
+                if sum(tracker.episode_rewards) > 0:
+                    break
+        # print(len(obs))
+
+        # obs_tensor = torch.tensor(np.array(obs), dtype=torch.float32)
+        # actions_tensor = torch.tensor(action, dtype=torch.long)
+
+        # ds = TensorDataset(obs_tensor, actions_tensor)
+        # dl = DataLoader(ds, batch_size=256, shuffle=True)
+
+        # policy = model.policy
+
+        # optimizer = torch.optim.Adam(policy.parameters(), lr=1e-4)
+        # loss_fn = nn.CrossEntropyLoss()
+
+        # for epoch in range(200):
+        #     for batch_obs, batch_actions in dl:
+
+        #         # 1. Extract features from the CNN
+        #         latent_pi = policy.extract_features(batch_obs)
+
+        #         # 2. Build the action distribution
+        #         dist = policy._get_action_dist_from_latent(latent_pi)
+
+        #         # 3. Get raw logits
+        #         logits = dist.distribution.logits
+
+        #         # 4. Cross entropy loss
+        #         loss = F.cross_entropy(logits, batch_actions)
+
+        #         # logits = policy(batch_obs)[0]  # policy returns (logits, value)
+        #         # loss = loss_fn(logits, batch_actions)
+        #         optimizer.zero_grad()
+        #         loss.backward()
+        #         optimizer.step()
+
+        return model
+
+
     if False:
 
         explore()
@@ -375,7 +612,7 @@ def train(env, exploration_steps: int):
             p = p.parent
         trajectory.reverse()
 
-        if False:
+        if True:
             trajectory_states = [x.state for x in trajectory]
             plot_best_path(env, trajectory_states)
             save_trajectory_video(env, trajectory_states)
@@ -391,8 +628,10 @@ def train(env, exploration_steps: int):
         # save trajectory to trajectory.save
         trajectory_for_save = [
             (
-                restore_and_observe(env, archiveItem.state),
-                archiveItem.action
+                archiveItem.state, # restore_and_observe(env, archiveItem.state),
+                archiveItem.action,
+                archiveItem.reward,
+                archiveItem.terminated,
             )
             for archiveItem in trajectory
         ]
@@ -403,14 +642,15 @@ def train(env, exploration_steps: int):
         # load trajectory from trajectory.save
         trajectory = pickle.load(open("trajectory.save", "rb"))
 
-        agent = robustify(trajectory)
+        # agent = robustify(trajectory)
+        # agent = robustify_PPO(trajectory)
+        agent = robustify_by_retreat(trajectory)
 
         obs, _ = env.reset(seed=0)
         trajectory_states = [_clone_state(env)]
+
         for _ in range(1_000):
-            with torch.no_grad():
-                logits = agent(torch.tensor(np.array(obs), dtype=torch.float32).unsqueeze(0))
-                action = int(torch.argmax(logits, dim=1).item())
+            action, _ = agent.predict(obs, deterministic=True)
             next_obs, _, terminated, truncated, _ = env.step(action)
             trajectory_states.append(_clone_state(env))
             obs = next_obs
@@ -419,7 +659,6 @@ def train(env, exploration_steps: int):
 
         plot_best_path(env, trajectory_states)
         save_trajectory_video(env, trajectory_states)
-
 
 
 def make_env(seed, **kwargs) -> gym.Env:
