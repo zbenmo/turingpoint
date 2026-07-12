@@ -1,5 +1,6 @@
 from __future__ import annotations
 from collections import Counter
+from curses import flash
 from dataclasses import dataclass
 import functools
 import math
@@ -110,18 +111,35 @@ class ResumeFromStateEnv(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self._restore_state: State | None = None
-        self._pending_restore = False
 
     def set_restore_state(self, state: State):
         self._restore_state = state
-        self._pending_restore = True
 
     def reset(self, *, seed=None, options=None):
-        if self._pending_restore and self._restore_state is not None:
+        if self._restore_state is not None:
             obs = restore_and_observe(self.env, self._restore_state)
-            self._pending_restore = False
             return obs, {}
         return super().reset(seed=seed, options=options)
+
+
+class MakeProgressEnv(gym.Wrapper):
+    """Simple reward shaping wrapper.
+
+    Every step that would otherwise receive a zero reward is given a small
+    penalty so PPO gets a denser learning signal while preserving the original
+    reward for positive outcomes.
+    """
+
+    def __init__(self, env, step_penalty: float = -1e-5):
+        super().__init__(env)
+        self.step_penalty = step_penalty
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        reward_value = float(reward)
+        if reward_value == 0.0:
+            reward = self.step_penalty
+        return obs, reward, terminated, truncated, info
 
 
 def get_random_action(parcel: Dict, env, repeat_prob: float | None = None):
@@ -448,7 +466,7 @@ def train(env, exploration_steps: int):
         return agent
 
 
-    def robustify_PPO(trajectory: list[tuple[Observation, Action]]) -> PPO:
+    def robustify_PPO(trajectory: list[tuple[Observation, Action]]) -> tuple[PPO, Any]:
         obs, action = zip(*trajectory)
 
         obs = obs[:-1]
@@ -460,7 +478,9 @@ def train(env, exploration_steps: int):
         ds = TensorDataset(obs_tensor, actions_tensor)
         dl = DataLoader(ds, batch_size=256, shuffle=True)
 
-        model = PPO("CnnPolicy", env, verbose=1)
+        # make_progress_env = MakeProgressEnv(env)
+        resume_env = ResumeFromStateEnv(env) # we need this env for later
+        model = PPO("CnnPolicy", resume_env, verbose=1) # PPO("CnnPolicy", env, verbose=1)
         policy = model.policy
 
         optimizer = torch.optim.Adam(policy.parameters(), lr=3e-4)
@@ -492,25 +512,57 @@ def train(env, exploration_steps: int):
 
             print(f"{epoch} -> loss = {np.mean(losses)}")
 
-        return model
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = 3e-5
+
+        for epoch in range(20):
+            losses = []
+            for batch_obs, batch_actions in dl:
+
+                # 1. Extract features from the CNN
+                latent_pi = policy.extract_features(batch_obs)
+
+                # 2. Build the action distribution
+                dist = policy._get_action_dist_from_latent(latent_pi)
+
+                # 3. Get raw logits
+                logits = dist.distribution.logits
+
+                # 4. Cross entropy loss
+                loss = F.cross_entropy(logits, batch_actions)
+
+                losses.append(loss.item())
+
+                # logits = policy(batch_obs)[0]  # policy returns (logits, value)
+                # loss = loss_fn(logits, batch_actions)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            print(f"{epoch} -> loss = {np.mean(losses)}")
+
+        return model, resume_env
 
     class RewardTracker(BaseCallback):
         def __init__(self):
             super().__init__()
             self.episode_rewards = []
-            self.current_reward = 0
+            self.current_reward = 0.0
+            self.has_positive_reward = False
 
         def _on_step(self) -> bool:
             # SB3 stores episode end in info["episode"]
             info = self.locals["infos"][0]
-            reward = self.locals["rewards"][0]
+            reward = float(self.locals["rewards"][0])
 
             self.current_reward += reward
+            if reward > 0:
+                self.has_positive_reward = True
 
             if "episode" in info:
                 # Episode finished
                 self.episode_rewards.append(self.current_reward)
-                self.current_reward = 0
+                self.current_reward = 0.0
 
             return True
 
@@ -519,7 +571,7 @@ def train(env, exploration_steps: int):
 
         obs = [restore_and_observe(env, s) for s in state]
 
-        # model = robustify_PPO(list(zip(obs, action)))
+        model, resume_env = robustify_PPO(list(zip(obs, action)))
 
         obs, next_obs = obs[:-1], obs[1:]
         action = action[1:]
@@ -535,29 +587,41 @@ def train(env, exploration_steps: int):
 
         with_reward = [i for i in range(len(reward)) if reward[i] > 0]
 
-        resume_env = ResumeFromStateEnv(env)
-        model = PPO("CnnPolicy", resume_env, verbose=1)
+        # # resume_env = ResumeFromStateEnv(env)
+        # # model = PPO("CnnPolicy", resume_env, verbose=1)
 
-        # print(','.join(map(str, with_reward)))
+        # # print(','.join(map(str, with_reward)))
 
-        # exit(0)
+        # # exit(0)
 
-        go_back = 2
+        go_back = 10
 
-        for ind in reversed(with_reward):
-            start = max(0, ind - go_back)
+        start = max(0, with_reward[0] - go_back) # len(state) - go_back
+        while start > 0:
+            # start = max(0, ind - go_back)
 
-            # show the states from here to the ind (included), with the reward(s) and the actions
-            plot_trajectory_segment(env, state, action, reward, start, ind, filename=f"retreat_segment_{start}_{ind}.png")
+            # # show the states from here to the ind (included), with the reward(s) and the actions
+            # plot_trajectory_segment(env, state, action, reward, start, ind, filename=f"retreat_segment_{start}_{ind}.png")
 
-            print(f'{start=}, {ind=}')
-            while True:
-                print('.')
+            # print(f'{start=}, {ind=}')
+            for _ in range(4):
+                print(f'{start=}')
+                print('.', end="", flush=True)
                 resume_env.set_restore_state(state[start])
                 tracker = RewardTracker()
-                model.learn(100, callback=tracker)
-                if sum(tracker.episode_rewards) > 0:
+                model.learn(5_000, callback=tracker)
+                if tracker.has_positive_reward:
                     break
+                start += 2 # go forward (back)
+
+            start -= go_back
+
+        # last time
+
+        start = 0
+        resume_env.set_restore_state(state[start])
+        model.learn(10_000)
+
         # print(len(obs))
 
         # obs_tensor = torch.tensor(np.array(obs), dtype=torch.float32)
@@ -642,15 +706,35 @@ def train(env, exploration_steps: int):
         # load trajectory from trajectory.save
         trajectory = pickle.load(open("trajectory.save", "rb"))
 
+        # state, action, reward, terminated = zip(*trajectory)
+
+        # obs = [restore_and_observe(env, s) for s in state]
+
+        # agent, _ = robustify_PPO(list(zip(obs, action)))
+
         # agent = robustify(trajectory)
         # agent = robustify_PPO(trajectory)
         agent = robustify_by_retreat(trajectory)
 
         obs, _ = env.reset(seed=0)
-        trajectory_states = [_clone_state(env)]
+        trajectory_states = [_clone_state(env)] # needed for plot/video
 
-        for _ in range(1_000):
-            action, _ = agent.predict(obs, deterministic=True)
+        # count_noop = 0
+        # in_sampling = 0
+        for _ in range(5_000):
+            if False: # in_sampling > 0:
+                action = env.action_space.sample()
+                # in_sampling -= 1
+            else:
+                action, _ = agent.predict(obs, deterministic=True)
+                # action_value = int(np.asarray(action).reshape(-1)[0])
+                # if action_value == 0: # NOOP
+                #     count_noop += 1
+                # else:
+                #     count_noop = 0
+                # if count_noop == 3:
+                #     in_sampling = 10
+                #     count_noop = 0
             next_obs, _, terminated, truncated, _ = env.step(action)
             trajectory_states.append(_clone_state(env))
             obs = next_obs
